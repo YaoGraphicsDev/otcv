@@ -1,0 +1,25 @@
+set(OTCV_BASE_LIB "OTCVBaseLib" CACHE INTERNAL "")
+
+file(GLOB SOURCES "*.cpp")
+file(GLOB HEADERS "*.h")
+add_library(${OTCV_BASE_LIB} STATIC ${SOURCES} ${HEADERS})
+
+set(GLFW_INCLUDE_PATH ${OTCV_GLFW_PATH}/include)
+message(STATUS "GLFW_INCLUDE_PATH = ${GLFW_INCLUDE_PATH}")
+target_include_directories(${OTCV_BASE_LIB} 
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} # propagates to top most project
+    PUBLIC ${Vulkan_INCLUDE_DIRS}
+    PUBLIC ${GLFW_INCLUDE_PATH})
+
+set(GLFW_LIB ${OTCV_GLFW_PATH}/${OTCV_GLFW_LIB_VARIANT}/glfw3.lib)
+message(STATUS "GLFW_LIB = ${GLFW_LIB}")
+target_link_libraries(${OTCV_BASE_LIB}
+    PUBLIC ${Vulkan_LIBRARIES}
+    PUBLIC ${GLFW_LIB})
+
+# product output directory
+#set_target_properties(${OTCV_BASE_LIB}
+#    PROPERTIES
+#    ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/lib
+#    ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/lib
+#)
