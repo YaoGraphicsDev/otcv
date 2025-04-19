@@ -60,6 +60,8 @@ struct Fence {
 	static Fence* create(bool signaled = true);
 	void destroy();
 
+	void wait_reset();
+
 	VkFenceCreateInfo info;
 	VkFence vk_fence = VK_NULL_HANDLE;
 };
@@ -67,6 +69,9 @@ struct Fence {
 enum class ResourceState {
 	Null,
 	Created,
+
+	HostRead,  
+	HostWrite, // This is a state that occurs after vkFlushMappedMemoryRanges 
 
 	TransferSrc,
 	TransferDst,
@@ -135,7 +140,7 @@ struct CommandBuffer {
 		float x = 0.0f, float y = 0.0f,
 		float min_depth = 0.0f, float max_depth = 1.0f);
 
-	void cmd_push_constant(GraphicsPipeline* pipeline, const void* data);
+	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
 	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set);
 	void cmd_draw_indexed(uint32_t index_count,
 		uint32_t first_index = 0,
@@ -145,7 +150,11 @@ struct CommandBuffer {
 
 	// compute pipeline commands
 	void cmd_bind_compute_pipeline(ComputePipeline* pipeline);
+	void cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data);
 	void cmd_dispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z = 1);
+
+	// blit & copy commands
+	void cmd_copy_buffer(Buffer* src, Buffer* dst);
 
 	// memory barrier commands
 	void cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip = 0, uint32_t layer = 0);
@@ -212,18 +221,19 @@ struct ShaderModuleBuilder {
 		VkDescriptorType _type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		uint32_t _array_count = 1;
 	};
-	ShaderModuleBuilder& spirv_path(const std::string& path);
+	// ShaderModuleBuilder& spirv_path(const std::string& path);
 	ShaderModuleBuilder& spirv_binary(const uint32_t* data, size_t byte_size);
+	// ShaderModuleBuilder& spirv_reflect_path(const std::string& path);
 	Uniform& uniform(uint16_t set, uint16_t binding);
-	ShaderModuleBuilder& push_constant(uint16_t offset, uint16_t size);
+	ShaderModuleBuilder& add_push_constant(const std::string& member_name, uint16_t offset, uint16_t size);
 	
 	ShaderModule* build();
 
-	std::string _spirv_path = "";
 	const uint32_t* _spirv_data = nullptr;
 	size_t _spirv_byte_size = 0;
 	std::map<uint32_t, Uniform> _uniforms;
-	uint32_t _push_constant_offset_size = 0;
+	std::map<std::string, uint32_t> _push_constants;
+	// uint32_t _push_constant_offset_size = 0;
 };
 struct ShaderModule {
 	ShaderModule(ShaderModuleBuilder& builder, const char* spirv_code, size_t byte_size);
@@ -391,8 +401,6 @@ struct VertexBuffer {
 
 	void resize(uint32_t binding, size_t size);
 
-	// void cmd_bind(CommandBuffer* command_buffer, std::vector<VkDeviceSize> offsets = {});
-
 	VertexBufferBuilder builder;
 	std::vector<Buffer*> buffers;
 };
@@ -479,12 +487,15 @@ struct DescriptorSetLayout {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {};
 };
 struct PipelineLayout {
-	PipelineLayout(const std::vector<DescriptorSetLayout>& set_layouts, const std::vector<VkPushConstantRange>& ranges);
+	PipelineLayout(
+		const std::vector<DescriptorSetLayout>& set_layouts,
+		const std::map<std::string, VkPushConstantRange>& push_const_members);
 	~PipelineLayout();
 
 	VkPipelineLayout vk_pipeline_layout = VK_NULL_HANDLE;
 	VkPipelineLayoutCreateInfo create_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	std::vector<VkPushConstantRange> push_const_ranges = {};
+	std::map<std::string, VkPushConstantRange> push_consts = {};
+	// std::vector<VkPushConstantRange> push_const_ranges = {};
 };
 
 // Graphics Pipeline
@@ -572,7 +583,7 @@ struct ComputePipeline {
 
 	void cmd_bind(CommandBuffer* cmd_buffer);
 	void cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set);
-	void cmd_push_constant(CommandBuffer* cmd_buffer, const void* data);
+	// void cmd_push_constant(CommandBuffer* cmd_buffer, const void* data);
 
 	VkPipeline vk_pipeline;
 	ShaderModule* compute_shader;

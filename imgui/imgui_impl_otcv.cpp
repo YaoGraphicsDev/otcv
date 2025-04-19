@@ -1,4 +1,5 @@
 #include "imgui_impl_otcv.h"
+#include "otcv_utils.h"
 #include "imgui.h"
 
 #include "imgui_vert.h"
@@ -62,22 +63,6 @@ void ImGui_ImplOTCV_CreateOTCVObjects() {
         bd->render_pass = builder.build();
     }
 
-    // pipeline
-    {
-        otcv::ShaderModuleBuilder builder;
-        builder
-            .spirv_binary(imgui_vert_spv, sizeof(imgui_vert_spv))
-            .push_constant(0, sizeof(float) * 4);
-        bd->vertex_shader = builder.build();
-    }
-    {
-        otcv::ShaderModuleBuilder builder;
-        builder
-            .spirv_binary(imgui_frag_spv, sizeof(imgui_frag_spv))
-            .uniform(0, 0).type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).end();
-        bd->fragment_shader = builder.build();
-    }
-
     // vertex and index buffers.
     {
         otcv::VertexBufferBuilder vb_builder;
@@ -111,6 +96,9 @@ void ImGui_ImplOTCV_CreateOTCVObjects() {
 
     // graphics pipeline
     {
+        bd->vertex_shader = otcv::load_shader(imgui_vert_spv, sizeof(imgui_vert_spv));
+        bd->fragment_shader = otcv::load_shader(imgui_frag_spv, sizeof(imgui_frag_spv));
+
         std::vector<VkDynamicState> dyn_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         otcv::GraphicsPipelineBuilder builder;
         builder
@@ -226,14 +214,16 @@ void ImGui_ImplOTCV_Commands(otcv::CommandBuffer* command_buffer, uint32_t image
 
         command_buffer->cmd_set_viewport((float)fb_width, (float)fb_height);
 
-        float push_consts[4];
+        float scale[2];
+        float translate[2];
         // scaling
-        push_consts[0] = 2.0f / draw_data->DisplaySize.x;
-        push_consts[1] = 2.0f / draw_data->DisplaySize.y;
+        scale[0] = 2.0f / draw_data->DisplaySize.x;
+        scale[1] = 2.0f / draw_data->DisplaySize.y;
+        command_buffer->cmd_push_constant(bd->pipeline, "uScale", scale);
         // translation
-        push_consts[2] = -1.0f - draw_data->DisplayPos.x * push_consts[0];
-        push_consts[3] = -1.0f - draw_data->DisplayPos.y * push_consts[1];
-        command_buffer->cmd_push_constant(bd->pipeline, push_consts);
+        translate[0] = -1.0f - draw_data->DisplayPos.x * scale[0];
+        translate[1] = -1.0f - draw_data->DisplayPos.y * scale[1];
+        command_buffer->cmd_push_constant(bd->pipeline, "uTranslate", translate);
 
         // Will project scissor/clipping rectangles into framebuffer space
         ImVec2 clip_off = draw_data->DisplayPos;         // (0,0) unless using multi-viewports

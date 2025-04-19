@@ -1,6 +1,12 @@
 # Check parameters
 message(STATUS "Checking OTCV parameters...")
 
+if (NOT OTCV_SPIRV_CROSS_PATH)
+    message(FATAL_ERROR "OTCV_SPIRV_CROSS_PATH not provided")
+else()
+    message(STATUS "OTCV_SPIRV_CROSS_PATH=${OTCV_SPIRV_CROSS_PATH}")
+endif()
+
 if (OTCV_ENABLE_IMGUI)
     message(STATUS "OTCV_ENABLE_IMGUI -- ON")
     if (NOT OTCV_IMGUI_PATH)
@@ -24,7 +30,7 @@ else()
     message(STATUS "OTCV_GLFW_LIB_VARIANT=${OTCV_GLFW_LIB_VARIANT}")
 endif()
 
-if (OTCV_ENABLE_COMPILE_SHADERS)
+if (OTCV_ENABLE_SHADER_TOOL)
     message(STATUS "OTCV_ENABLE_COMPILE_SHADER -- ON")
     if (NOT OTCV_GLSL_IN_PATH)
         message(FATAL_ERROR "OTCV_GLSL_IN_PATH not provided")
@@ -40,13 +46,23 @@ else()
     message(STATUS "OTCV_ENABLE_COMPILE_SHADER -- OFF")
 endif()
 
-cmake_minimum_required(VERSION 3.20)
+if (OTCV_ENABLE_VISUALIZER)
+    message(STATUS "OTCV_ENABLE_VISUALIZER -- ON")
+else()
+    message(STATUS "OTCV_ENABLE_VISUALIZER -- OFF")
+endif()
+
+cmake_minimum_required(VERSION 3.24)
 project(OTCV)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
+#find_package(spirv_cross_c_shared REQUIRED)
+
+set(OTCV_CMAKE_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" CACHE PATH "")
+message(STATUS "OTCV_CMAKE_INCLUDE_PATH=${OTCV_CMAKE_INCLUDE_PATH}")
 
 # base
 add_subdirectory("base")
@@ -57,6 +73,11 @@ if (OTCV_ENABLE_IMGUI)
 endif()
 
 # shader compilation
-if (OTCV_ENABLE_COMPILE_SHADERS)
-    add_subdirectory("compile_shaders")
+if (OTCV_ENABLE_SHADER_TOOL)
+    add_subdirectory("shader_tool")
+endif()
+
+# visualizer
+if (OTCV_ENABLE_VISUALIZER)
+    add_subdirectory("visualizer")
 endif()

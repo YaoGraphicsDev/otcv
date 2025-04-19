@@ -4,6 +4,9 @@
 #include <cassert>
 #include <iostream>
 #include <fstream>
+#include <filesystem>
+#include <spirv_cross/spirv_cross.hpp>
+
 
 namespace otcv {
 
@@ -32,6 +35,150 @@ std::vector<char> read_file_binary(const std::string& path) {
 
 	fs.close();
 	return buffer;
+}
+
+void strip_all_extensions(const std::string& filepath, std::string& filename, std::vector<std::string>& extensions) {
+	std::filesystem::path p(filepath);
+
+	while (p.has_extension()) {
+		filename = p.stem().string();
+		extensions.push_back(p.extension().string());
+		p = p.stem();
+	}
+}
+
+void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count, ShaderModuleBuilder& builder) {
+	spirv_cross::Compiler compiler(spirv_bin, word_count);
+	spirv_cross::ShaderResources shader_res = compiler.get_shader_resources();
+
+	// ubos
+	for (const auto& ubo : shader_res.uniform_buffers) {
+		uint32_t set = compiler.get_decoration(ubo.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(ubo.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(ubo.id);
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+			.name(name)
+			.end();
+	}
+
+	// texture samplers
+	for (const auto& textures : shader_res.sampled_images) {
+		uint32_t set = compiler.get_decoration(textures.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(textures.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(textures.id);
+
+		spirv_cross::SPIRType type = compiler.get_type(textures.type_id);
+		uint32_t array_size = 1;
+		if (!type.array.empty()) {
+			uint32_t array_size = type.array[0];
+		}
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+			.array_count(array_size)
+			.name(name)
+			.end();
+	}
+
+	// storage images
+	for (const auto& images : shader_res.storage_images) {
+		uint32_t set = compiler.get_decoration(images.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(images.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(images.id);
+
+		spirv_cross::SPIRType type = compiler.get_type(images.type_id);
+		uint32_t array_size = 1;
+		if (!type.array.empty()) {
+			array_size = type.array[0];
+		}
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.array_count(array_size)
+			.name(name)
+			.end();
+	}
+
+	// ssbos
+	for (const auto& ssbo : shader_res.storage_buffers) {
+		uint32_t set = compiler.get_decoration(ssbo.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(ssbo.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(ssbo.id);
+
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+			.name(name)
+			.end();
+	}
+
+	// push constants
+	uint32_t pc_offset = 0;
+	uint32_t pc_size = 0;
+	if (!shader_res.push_constant_buffers.empty()) {
+		for (size_t i = 0; i < shader_res.push_constant_buffers.size(); ++i) {
+			const auto& pc = shader_res.push_constant_buffers[i];
+			spirv_cross::SPIRType type = compiler.get_type(pc.base_type_id);
+			for (uint32_t i = 0; i < type.member_types.size(); i++) {
+				std::string member_name = compiler.get_member_name(pc.base_type_id, i);
+				uint32_t offset = compiler.type_struct_member_offset(type, i);
+				uint32_t size = compiler.get_declared_struct_member_size(type, i);
+				builder.add_push_constant(member_name, (uint16_t)offset, (uint16_t)size);
+			}
+		}
+	}
+}
+
+ShaderModule* load_shader(const uint32_t* spirv_bin, uint32_t byte_size) {
+	ShaderModuleBuilder builder;
+	builder.spirv_binary(spirv_bin, byte_size);
+
+	get_spirv_resource_bindings(spirv_bin, byte_size / sizeof(uint32_t), builder);
+
+	ShaderModule* shader = builder.build();
+	return shader;
+}
+
+ShaderModule* load_shader(const std::string& spirv_path) {
+	std::vector<char> code = std::move(read_file_binary(spirv_path));
+	return load_shader((uint32_t*)code.data(), code.size());
+}
+
+std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& dir) {
+	if (!std::filesystem::exists(dir)) {
+		std::cout << "Directory " << dir << " does not exist" << std::endl;
+		exit(1);
+	}
+	if (!std::filesystem::is_directory(dir)) {
+		std::cout << "Path " << dir << " is not a directory" << std::endl;
+		exit(1);
+	}
+
+	std::map<std::string, ShaderModule*> shader_map;
+	for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+		if (entry.is_regular_file()) {
+			std::string filename = entry.path().stem().string();
+			std::string extension = entry.path().extension().string();
+			if (extension == ".spv") {
+				shader_map[filename] = load_shader(entry.path().string());
+			} else {
+				std::cout << "unrecognized file extension of file: " << entry.path().string() << std::endl;
+			}
+		}
+	}
+
+	return shader_map;
+}
+
+uint32_t calc_group_count(uint32_t total_invo, uint32_t group_size) {
+	if (total_invo % group_size == 0) {
+		return total_invo / group_size;
+	}
+	else {
+		return total_invo / group_size + 1;
+	}
 }
 
 uint32_t find_memory_type(uint32_t usable_types_mask, VkMemoryPropertyFlags required_props) {
@@ -317,6 +464,10 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		barrier.srcAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
 		src_stage_mask = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
 	}
+	else if (from_state == ResourceState::HostWrite) {
+		barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+		src_stage_mask = VK_PIPELINE_STAGE_HOST_BIT;
+	}
 	else {
 		std::cout << "cannot find suitable start state for pipeline barrier, from_state = " << (uint32_t)from_state << std::endl;
 		exit(1);
@@ -330,6 +481,10 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		dst_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	}
+	else if (to_state == ResourceState::TransferDst) {
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		dst_stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}
 	else {
 		std::cout << "cannot find suitable end state for pipeline barrier, to_state = " << (uint32_t)to_state << std::endl;
 		exit(1);
@@ -339,5 +494,14 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		0, nullptr,
 		1, &barrier,
 		0, nullptr);
+}
+
+void wait_for_and_reset_fences(std::vector<Fence*> fences) {
+	std::vector<VkFence> vk_fences(fences.size());
+	for (size_t i = 0; i < fences.size(); ++i) {
+		vk_fences[i] = fences[i]->vk_fence;
+	}
+	vkWaitForFences(g_device->vk_device, vk_fences.size(), vk_fences.data(), VK_TRUE, UINT64_MAX);
+	vkResetFences(g_device->vk_device, vk_fences.size(), vk_fences.data());
 }
 }

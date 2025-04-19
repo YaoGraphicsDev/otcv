@@ -136,6 +136,11 @@ void Fence::destroy() {
 	g_user_fences.erase(ptr);
 }
 
+void Fence::wait_reset() {
+	vkWaitForFences(g_device->vk_device, 1, &vk_fence, VK_TRUE, UINT64_MAX);
+	vkResetFences(g_device->vk_device, 1, &vk_fence);
+}
+
 // Descriptor pool
 DescriptorSet::DescriptorSet(VkDescriptorSetAllocateInfo& info,
 	const std::vector<VkDescriptorSetLayoutBinding>& bindings, 
@@ -514,14 +519,36 @@ void CommandBuffer::cmd_set_viewport(float width, float height, float x, float y
 	viewport.maxDepth = max_depth;
 	vkCmdSetViewport(this->vk_command_buffer, 0, 1, &viewport);
 }
-void CommandBuffer::cmd_push_constant(GraphicsPipeline* pipeline, const void* data) {
-	for (VkPushConstantRange& range : pipeline->pipeline_layout->push_const_ranges) {
+void CommandBuffer::cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data) {
+	auto iter = pipeline->pipeline_layout->push_consts.find(name);
+	if (iter == pipeline->pipeline_layout->push_consts.end()) {
+		return;
+	}
+	VkPushConstantRange& range = iter->second;
+
+	for (auto& member : pipeline->pipeline_layout->push_consts) {
 		vkCmdPushConstants(this->vk_command_buffer,
 			pipeline->pipeline_layout->vk_pipeline_layout,
 			range.stageFlags,
 			range.offset,
 			range.size,
-			(char*)data + range.offset);
+			data);
+	}
+}
+void CommandBuffer::cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data) {
+	auto iter = pipeline->pipeline_layout->push_consts.find(name);
+	if (iter == pipeline->pipeline_layout->push_consts.end()) {
+		return;
+	}
+	VkPushConstantRange& range = iter->second;
+
+	for (auto& member : pipeline->pipeline_layout->push_consts) {
+		vkCmdPushConstants(this->vk_command_buffer,
+			pipeline->pipeline_layout->vk_pipeline_layout,
+			range.stageFlags,
+			range.offset,
+			range.size,
+			data);
 	}
 }
 void CommandBuffer::cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set) {
@@ -540,6 +567,14 @@ void CommandBuffer::cmd_dispatch(uint32_t group_count_x, uint32_t group_count_y,
 		group_count_x,
 		group_count_y,
 		group_count_z);
+}
+void CommandBuffer::cmd_copy_buffer(Buffer* src, Buffer* dst) {
+	assert(dst->builder._info.size == src->builder._info.size);
+	VkBufferCopy region{};
+	region.srcOffset = 0;
+	region.dstOffset = 0;
+	region.size = dst->builder._info.size;
+	vkCmdCopyBuffer(vk_command_buffer, src->vk_buffer, dst->vk_buffer, 1, &region);
 }
 void CommandBuffer::cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip, uint32_t layer) {
 	transition_image_state(this, image, from_state, to_state, mip, layer);
@@ -641,19 +676,6 @@ void VertexBuffer::resize(uint32_t binding, size_t size) {
 	b_builder.size(size);
 	tgt_buffer = new Buffer(b_builder);
 }
-
-//void VertexBuffer::cmd_bind(CommandBuffer* command_buffer, std::vector<VkDeviceSize> offsets) {
-//	uint32_t binding_count = this->buffers.size();
-//	std::vector<VkBuffer> vk_buffers;
-//	for (Buffer* b : buffers) {
-//		vk_buffers.push_back(b->vk_buffer);
-//	}
-//	if (offsets.size() < binding_count) {
-//		offsets.resize(binding_count, 0);
-//	}
-//	vkCmdBindVertexBuffers(command_buffer->vk_command_buffer, 0, binding_count, vk_buffers.data(), offsets.data());
-//}
-
 
 // image
 Image::Image(ImageBuilder& builder) {
@@ -860,10 +882,45 @@ DescriptorSetLayout::~DescriptorSetLayout() {
 	vkDestroyDescriptorSetLayout(g_device->vk_device, vk_desc_set_layout, nullptr);
 }
 
-PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout>& set_layouts, const std::vector<VkPushConstantRange>& ranges) {
+PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout>& set_layouts, const std::map<std::string, VkPushConstantRange>& push_const_members) {
 	std::vector<VkDescriptorSetLayout> vk_desc_set_layouts;
 	for (auto& layout : set_layouts) {
 		vk_desc_set_layouts.push_back(layout.vk_desc_set_layout);
+	}
+
+	// Vulkan does not accept same stage flags in different push constant ranges
+	// Merge stages
+	//std::map<VkShaderStageFlags, VkPushConstantRange> stage_range_map;
+	//for (auto& ele : push_const_members) {
+	//	const VkPushConstantRange& range = ele.second;
+	//	stage_range_map[range.stageFlags] = range;
+	//}
+
+	std::vector<VkPushConstantRange> ranges;
+	for (auto& member : push_const_members) {
+		// ranges.push_back(member.second);
+		const VkPushConstantRange& range = member.second;
+		auto iter = std::find_if(ranges.begin(), ranges.end(),
+			[&](VkPushConstantRange& r) {
+			return r.stageFlags == range.stageFlags;
+		});
+
+		if (iter != ranges.end()) {
+			// found range with the same stage flag, merge
+			if (iter->offset < range.offset) {
+				iter->size = range.offset + range.size - iter->offset;
+			}
+			else if (range.offset < iter->offset) {
+				iter->size = iter->offset + iter->size - range.offset;
+				iter->offset = range.offset;
+			}
+			else {
+				assert(false);
+			}
+		}
+		else {
+			ranges.insert(iter, range);
+		}
 	}
 	
 	VkPipelineLayoutCreateInfo pipeline_layout_create{};
@@ -879,7 +936,7 @@ PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout>& set_layou
 	}
 
 	this->create_info = pipeline_layout_create;
-	this->push_const_ranges = ranges;
+	this->push_consts = push_const_members;
 }
 PipelineLayout::~PipelineLayout() {
 	vkDestroyPipelineLayout(g_device->vk_device, vk_pipeline_layout, nullptr);
@@ -959,19 +1016,21 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 		}
 	};
 
-	std::vector<VkPushConstantRange> push_constant_ranges;
+	std::map<std::string, VkPushConstantRange> push_constant_ranges;
 	auto collect_push_constants = [&](ShaderModuleBuilder& shader_builder, VkShaderStageFlags stage) {
-		uint16_t pc_offset;
-		uint16_t pc_size;
-		otcv::unpack(shader_builder._push_constant_offset_size, pc_offset, pc_size);
-		if (pc_size == 0) {
-			return;
+		for (auto& pc_member : shader_builder._push_constants) {
+			uint16_t pc_offset;
+			uint16_t pc_size;
+			otcv::unpack(pc_member.second, pc_offset, pc_size);
+			if (pc_size == 0) {
+				return;
+			}
+			VkPushConstantRange range{};
+			range.offset = pc_offset;
+			range.size = pc_size;
+			range.stageFlags = stage;
+			push_constant_ranges[pc_member.first] = range;
 		}
-		VkPushConstantRange range{};
-		range.offset = pc_offset;
-		range.size = pc_size;
-		range.stageFlags = stage;
-		push_constant_ranges.push_back(range);
 	};
 
 	if (builder._vertex_shader) {
@@ -1024,24 +1083,6 @@ void GraphicsPipeline::destroy() {
 void GraphicsPipeline::cmd_bind(CommandBuffer* cmd_buffer) {
 	vkCmdBindPipeline(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline);
 }
-//void GraphicsPipeline::cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set) {
-//	vkCmdBindDescriptorSets(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-//		pipeline_layout->vk_pipeline_layout, 0, 1, &(set->vk_desc_set), 0, nullptr);
-//}
-//void GraphicsPipeline::cmd_push_constant(CommandBuffer* cmd_buffer, const void* data, VkShaderStageFlags stage) {
-//	auto iter = std::find_if(
-//		pipeline_layout->push_const_ranges.begin(),
-//		pipeline_layout->push_const_ranges.end(),
-//		[&](VkPushConstantRange& range) {
-//		return range.stageFlags == stage;
-//	});
-//
-//	if (iter != pipeline_layout->push_const_ranges.end()) {
-//		vkCmdPushConstants(cmd_buffer->vk_command_buffer, pipeline_layout->vk_pipeline_layout, stage,
-//			iter->offset,
-//			iter->size, data);
-//	}
-//}
 
 ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
 	std::vector<std::vector<VkDescriptorSetLayoutBinding>> layout_binding_set;
@@ -1065,25 +1106,44 @@ ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
 		}
 	};
 
+	std::map<std::string, VkPushConstantRange> push_constant_ranges;
+	auto collect_push_constants = [&]() {
+		for (auto& pc_member : compute_shader->builder._push_constants) {
+			uint16_t pc_offset;
+			uint16_t pc_size;
+			otcv::unpack(pc_member.second, pc_offset, pc_size);
+			if (pc_size == 0) {
+				return;
+			}
+			VkPushConstantRange range{};
+			range.offset = pc_offset;
+			range.size = pc_size;
+			range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+			push_constant_ranges[pc_member.first] = range;
+		}
+	};
+
 	collect_uniforms();
+	collect_push_constants();
 
 	for (auto& set_bindings : layout_binding_set) {
 		desc_set_layouts.emplace_back(set_bindings);
 	}
 
-	uint16_t pc_offset;
-	uint16_t pc_size;
-	otcv::unpack(compute_shader->builder._push_constant_offset_size, pc_offset, pc_size);
-	if (pc_size > 0) {
-		VkPushConstantRange push_constant_range;
-		push_constant_range.offset = pc_offset;
-		push_constant_range.size = pc_size;
-		push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-		pipeline_layout = new PipelineLayout(desc_set_layouts, { push_constant_range });
-	}
-	else {
-		pipeline_layout = new PipelineLayout(desc_set_layouts, {});
-	}
+	pipeline_layout = new PipelineLayout(desc_set_layouts, push_constant_ranges);
+	//uint16_t pc_offset;
+	//uint16_t pc_size;
+	//otcv::unpack(compute_shader->builder._push_constant_offset_size, pc_offset, pc_size);
+	//if (pc_size > 0) {
+	//	VkPushConstantRange push_constant_range;
+	//	push_constant_range.offset = pc_offset;
+	//	push_constant_range.size = pc_size;
+	//	push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	//	pipeline_layout = new PipelineLayout(desc_set_layouts, { push_constant_range });
+	//}
+	//else {
+	//	pipeline_layout = new PipelineLayout(desc_set_layouts, {});
+	//}
 
 	VkPipelineShaderStageCreateInfo stage_create{};
 	stage_create.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1125,14 +1185,14 @@ void ComputePipeline::cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, Descrip
 	vkCmdBindDescriptorSets(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline_layout->vk_pipeline_layout, 0, 1, &(set->vk_desc_set), 0, nullptr);
 }
-void ComputePipeline::cmd_push_constant(CommandBuffer* cmd_buffer, const void* data) {	
-	if (pipeline_layout->push_const_ranges.empty()) {
-		return;
-	}
-	vkCmdPushConstants(cmd_buffer->vk_command_buffer, pipeline_layout->vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-		this->pipeline_layout->push_const_ranges[0].offset,
-		this->pipeline_layout->push_const_ranges[0].size, data);
-}
+//void ComputePipeline::cmd_push_constant(CommandBuffer* cmd_buffer, const void* data) {	
+//	if (pipeline_layout->push_const_ranges.empty()) {
+//		return;
+//	}
+//	vkCmdPushConstants(cmd_buffer->vk_command_buffer, pipeline_layout->vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+//		this->pipeline_layout->push_const_ranges[0].offset,
+//		this->pipeline_layout->push_const_ranges[0].size, data);
+//}
 
 Framebuffer::Framebuffer(FramebufferBuilder& builder) {
 	builder._info.attachmentCount = builder._attachments.size();

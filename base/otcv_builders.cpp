@@ -255,32 +255,33 @@ ShaderModuleBuilder::Uniform::array_count(uint32_t n) {
 ShaderModuleBuilder& ShaderModuleBuilder::Uniform::end() {
 	return *_parent;
 }
-ShaderModuleBuilder& ShaderModuleBuilder::spirv_path(const std::string& path) {
-	this->_spirv_path = path;
-	return *this;
-}
+//ShaderModuleBuilder& ShaderModuleBuilder::spirv_path(const std::string& path) {
+//	this->_spirv_path = path;
+//	return *this;
+//}
 ShaderModuleBuilder& ShaderModuleBuilder::spirv_binary(const uint32_t* data, size_t byte_size) {
 	this->_spirv_data = data;
 	this->_spirv_byte_size = byte_size;
 	return *this;
 }
+//ShaderModuleBuilder& ShaderModuleBuilder::spirv_reflect_path(const std::string& path) {
+//	this->_spirv_reflect_path = path;
+//	return *this;
+//}
 ShaderModuleBuilder::Uniform& ShaderModuleBuilder::uniform(uint16_t set, uint16_t binding) {
 	uint32_t key = otcv::pack(set, binding);
 	this->_uniforms[key] = Uniform(this);
 	return this->_uniforms[key];
 }
 ShaderModuleBuilder&
-ShaderModuleBuilder::push_constant(uint16_t offset, uint16_t size) {
-	this->_push_constant_offset_size = pack(offset, size);
+ShaderModuleBuilder::add_push_constant(const std::string& member_name, uint16_t offset, uint16_t size) {
+	this->_push_constants[member_name] = pack(offset, size);
+	// this->_push_constant_offset_size = pack(offset, size);
 	return *this;
 }
 ShaderModule* ShaderModuleBuilder::build() {
 	ShaderModule* shader = nullptr;
-	if (!_spirv_path.empty()) {
-		std::vector<char> code = std::move(read_file_binary(_spirv_path));
-		shader = new ShaderModule(*this, code.data(), code.size());
-	}
-	else if (_spirv_data && _spirv_byte_size > 0) {
+	if (_spirv_data && _spirv_byte_size > 0) {
 		shader = new ShaderModule(*this, (const char*)_spirv_data, _spirv_byte_size);
 	}
 	

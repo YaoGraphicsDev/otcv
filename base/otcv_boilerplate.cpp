@@ -177,8 +177,8 @@ void create_device() {
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledLayerCount = layer_count;
     device_info.ppEnabledLayerNames = layer_names;
-    device_info.enabledExtensionCount = extension_count;
-    device_info.ppEnabledExtensionNames = extension_names; // assume physical device supports this
+    device_info.enabledExtensionCount = device_extension_count;
+    device_info.ppEnabledExtensionNames = pp_device_extension_names; // assume physical device supports this
     // device_info.pEnabledFeatures = &feat_info;
 
     g_device.reset(new Device(device_info));
