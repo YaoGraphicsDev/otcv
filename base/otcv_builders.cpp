@@ -462,6 +462,93 @@ RenderPassBegin& RenderPassBegin::area(uint32_t width, uint32_t height, int32_t 
 	return *this;
 }
 
+// rendering begin
+RenderingBegin::Attachment::Attachment(RenderingBegin* parent) {
+	_parent = parent;
+	_info = VkRenderingAttachmentInfo{};
+	_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	_info.imageView = VK_NULL_HANDLE;
+	_info.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	_info.resolveMode = VK_RESOLVE_MODE_NONE;
+	_info.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::image_view(VkImageView view) {
+	_info.imageView = view;
+	return *this;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::image_layout(VkImageLayout layout) {
+	_info.imageLayout = layout;
+	return *this;
+}
+
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::load_store(VkAttachmentLoadOp load_op, VkAttachmentStoreOp store_op) {
+	_info.loadOp = load_op;
+	_info.storeOp = store_op;
+	return *this;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::clear_value(float depth, uint32_t stencil) {
+	_info.clearValue.depthStencil = { depth, stencil };
+	return *this;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::clear_value(float r, float g, float b, float a) {
+	_info.clearValue.color.float32[0] = r;
+	_info.clearValue.color.float32[1] = g;
+	_info.clearValue.color.float32[2] = b;
+	_info.clearValue.color.float32[3] = a;
+	return *this;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::clear_value(int32_t r, int32_t g, int32_t b, int32_t a) {
+	_info.clearValue.color.int32[0] = r;
+	_info.clearValue.color.int32[1] = g;
+	_info.clearValue.color.int32[2] = b;
+	_info.clearValue.color.int32[3] = a;
+	return *this;
+}
+RenderingBegin::Attachment&
+RenderingBegin::Attachment::clear_value(uint32_t r, uint32_t g, uint32_t b, uint32_t a) {
+	_info.clearValue.color.uint32[0] = r;
+	_info.clearValue.color.uint32[1] = g;
+	_info.clearValue.color.uint32[2] = b;
+	_info.clearValue.color.uint32[3] = a;
+	return *this;
+}
+RenderingBegin& RenderingBegin::Attachment::end() {
+	return *_parent;
+}
+RenderingBegin::RenderingBegin() {
+	_info = VkRenderingInfo{};
+	_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+	_info.renderArea = { {0, 0}, {0, 0} };
+	_info.layerCount = 1;
+	_info.viewMask = 0;
+	_info.colorAttachmentCount = 0;
+	_info.pColorAttachments = nullptr;
+	_info.pDepthAttachment = nullptr;
+	_info.pStencilAttachment = nullptr;
+
+	_depth_stencil_attachment = nullptr;
+}
+RenderingBegin& RenderingBegin::area(uint32_t width, uint32_t height, int32_t x, int32_t y) {
+	_info.renderArea.offset = { x, y };
+	_info.renderArea.extent = { width, height };
+	return *this;
+}
+RenderingBegin::Attachment& RenderingBegin::color_attachment() {
+	_color_attachments.push_back(Attachment(this));
+	return _color_attachments.back();
+}
+RenderingBegin::Attachment& RenderingBegin::depth_stencil_attachment() {
+	_depth_stencil_attachment.reset(new Attachment(this));
+	return *_depth_stencil_attachment;
+}
+
 // graphics pipeline builder
 GraphicsPipelineBuilder::AttachmentBlend::AttachmentBlend(GraphicsPipelineBuilder* parent) {
 	this->_parent = parent;
@@ -497,6 +584,41 @@ GraphicsPipelineBuilder::AttachmentBlend::color_mask(VkColorComponentFlags color
 }
 
 GraphicsPipelineBuilder& GraphicsPipelineBuilder::AttachmentBlend::end() {
+	return *_parent;
+}
+
+GraphicsPipelineBuilder::PipelineRendering::PipelineRendering(GraphicsPipelineBuilder* parent) {
+	this->_parent = parent;
+	_pipeline_rendering = VkPipelineRenderingCreateInfo{};
+	_pipeline_rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	_pipeline_rendering.viewMask = 0;
+	_pipeline_rendering.colorAttachmentCount = 0;
+	_pipeline_rendering.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+	_pipeline_rendering.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+}
+GraphicsPipelineBuilder::PipelineRendering&
+GraphicsPipelineBuilder::PipelineRendering::add_color_attachment_format(VkFormat format) {
+	_color_attachment_formats.push_back(format);
+	return *this;
+}
+GraphicsPipelineBuilder::PipelineRendering&
+GraphicsPipelineBuilder::PipelineRendering::depth_stencil_attachment_format(VkFormat format) {
+	_pipeline_rendering.depthAttachmentFormat = format;
+	_pipeline_rendering.stencilAttachmentFormat = format;
+	return *this;
+}
+GraphicsPipelineBuilder::PipelineRendering&
+GraphicsPipelineBuilder::PipelineRendering::add_color_attachment_format(otcv::Image* image) {
+	_color_attachment_formats.push_back(image->builder._image_info.format);
+	return *this;
+}
+GraphicsPipelineBuilder::PipelineRendering&
+GraphicsPipelineBuilder::PipelineRendering::depth_stencil_attachment_format(otcv::Image* image) {
+	_pipeline_rendering.depthAttachmentFormat = image->builder._image_info.format;
+	_pipeline_rendering.stencilAttachmentFormat = image->builder._image_info.format;
+	return *this;
+}
+GraphicsPipelineBuilder& GraphicsPipelineBuilder::PipelineRendering::end() {
 	return *_parent;
 }
 
@@ -565,7 +687,10 @@ GraphicsPipelineBuilder::GraphicsPipelineBuilder() {
 
 	_render_pass = nullptr;
 	_subpass = -1;
+
+	_pipeline_rendering = nullptr;
 }
+
 GraphicsPipelineBuilder& GraphicsPipelineBuilder::render_pass(RenderPass* render_pass, uint32_t subpass) {
 	_render_pass = render_pass;
 	_subpass = subpass;
@@ -652,6 +777,10 @@ GraphicsPipelineBuilder::blend_attachment(uint32_t n) {
 GraphicsPipelineBuilder& GraphicsPipelineBuilder::add_dynamic_state(VkDynamicState dyn_state) {
 	_dynamic_states.push_back(dyn_state);
 	return *this;
+}
+GraphicsPipelineBuilder::PipelineRendering& GraphicsPipelineBuilder::pipline_rendering() {
+	_pipeline_rendering.reset(new PipelineRendering(this));
+	return *_pipeline_rendering;
 }
 GraphicsPipeline* GraphicsPipelineBuilder::build() {
 	GraphicsPipeline* pipeline = new GraphicsPipeline(*this);

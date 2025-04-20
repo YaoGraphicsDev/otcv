@@ -483,11 +483,26 @@ void CommandBuffer::cmd_begin_render_pass(RenderPass* pass, RenderPassBegin& beg
 	begin._info.pClearValues = begin._clear_values.data();
 	
 	vkCmdBeginRenderPass(this->vk_command_buffer, &begin._info, VK_SUBPASS_CONTENTS_INLINE);
-	pass->vk_begin = std::move(begin);
+	pass->begin = std::move(begin);
 }
 void CommandBuffer::cmd_end_render_pass(RenderPass* pass) {
 	vkCmdEndRenderPass(this->vk_command_buffer);
-	pass->vk_begin = {};
+	pass->begin = {};
+}
+void CommandBuffer::cmd_begin_rendering(RenderingBegin& begin) {
+	std::vector<VkRenderingAttachmentInfo> vk_color_attachments;
+	for (auto& attachment : begin._color_attachments) {
+		vk_color_attachments.push_back(attachment._info);
+	}
+	begin._info.colorAttachmentCount = begin._color_attachments.size();
+	begin._info.pColorAttachments = vk_color_attachments.data();
+	if (begin._depth_stencil_attachment) {
+		begin._info.pDepthAttachment = &begin._depth_stencil_attachment->_info;
+	}
+	vkCmdBeginRendering(this->vk_command_buffer, &begin._info);
+}
+void CommandBuffer::cmd_end_rendering() {
+	vkCmdEndRendering(this->vk_command_buffer);
 }
 void CommandBuffer::cmd_bind_graphics_pipeline(GraphicsPipeline* pipeline) {
 	vkCmdBindPipeline(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->vk_pipeline);
@@ -976,9 +991,15 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 		VK_COLOR_COMPONENT_G_BIT |
 		VK_COLOR_COMPONENT_B_BIT |
 		VK_COLOR_COMPONENT_A_BIT;
-	std::vector<VkPipelineColorBlendAttachmentState> blend_states(
-		builder._render_pass->builder._subpasses[builder._subpass]._refs_color.size(),
-		no_blend_state);
+	int color_attachment_count;
+	if (builder._pipeline_rendering) {
+		color_attachment_count = builder._pipeline_rendering->_color_attachment_formats.size();
+	}
+	else {
+		color_attachment_count = builder._render_pass->builder._subpasses[builder._subpass]._refs_color.size();
+	}
+
+	std::vector<VkPipelineColorBlendAttachmentState> blend_states(color_attachment_count, no_blend_state);
 	for (auto& ele : builder._attachment_blend_states_map) {
 		uint32_t attachment_idx = ele.first;
 		assert(attachment_idx < blend_states.size());
@@ -1048,8 +1069,15 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 	}
 	pipeline_layout = new PipelineLayout(desc_set_layouts, push_constant_ranges);
 
+	// dynamic rendering
+	if (builder._pipeline_rendering) {
+		builder._pipeline_rendering->_pipeline_rendering.colorAttachmentCount = color_attachment_count;
+		builder._pipeline_rendering->_pipeline_rendering.pColorAttachmentFormats = builder._pipeline_rendering->_color_attachment_formats.data();
+	}
+
 	VkGraphicsPipelineCreateInfo create_info{};
 	create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	create_info.pNext = builder._pipeline_rendering ? &builder._pipeline_rendering->_pipeline_rendering : nullptr;
 	create_info.stageCount = shader_stages.size();
 	create_info.pStages = shader_stages.data();
 	create_info.pVertexInputState = &builder._vertex_state;
@@ -1061,8 +1089,8 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 	create_info.pColorBlendState = &builder._blend_state;
 	create_info.pDynamicState = &builder._dynamic_state;
 	create_info.layout = pipeline_layout->vk_pipeline_layout;
-	create_info.renderPass = builder._render_pass->vk_render_pass;
-	create_info.subpass = builder._subpass;
+	create_info.renderPass = builder._pipeline_rendering ? VK_NULL_HANDLE : builder._render_pass->vk_render_pass;
+	create_info.subpass = builder._pipeline_rendering ? 0 : builder._subpass;
 	VkResult result = vkCreateGraphicsPipelines(g_device->vk_device, VK_NULL_HANDLE, 1, &create_info, nullptr, &vk_pipeline);
 	if (result != VK_SUCCESS) {
 		std::cout << "cannot create pipeline, error code = " << result << std::endl;

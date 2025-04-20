@@ -14,10 +14,6 @@ namespace otcv {
 	static const char* _layer_names[] = { "VK_LAYER_KHRONOS_validation" };
 	static const char** layer_names = _layer_names;
 
-	static uint32_t device_extension_count = 1;
-	static const char* device_extension_names[] = { "VK_KHR_swapchain" };
-	static const char** pp_device_extension_names = device_extension_names;
-
 	static VkQueueFlagBits queue_required = VkQueueFlagBits(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
 
 	static VkSurfaceFormatKHR surface_format = { VK_FORMAT_B8G8R8A8_SRGB , VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };

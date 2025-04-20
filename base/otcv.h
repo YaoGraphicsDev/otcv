@@ -114,6 +114,7 @@ struct Image;
 struct Buffer;
 struct RenderPass;
 struct RenderPassBegin;
+struct RenderingBegin;
 struct GraphicsPipeline;
 struct ComputePipeline;
 struct VertexBuffer;
@@ -130,6 +131,10 @@ struct CommandBuffer {
 	// graphics pipeline commands
 	void cmd_begin_render_pass(RenderPass* pass, RenderPassBegin& begin);
 	void cmd_end_render_pass(RenderPass* pass);
+
+	// dynamic rendering
+	void cmd_begin_rendering(RenderingBegin& begin);
+	void cmd_end_rendering();
 
 	void cmd_bind_graphics_pipeline(GraphicsPipeline* pipeline);
 
@@ -467,6 +472,32 @@ struct RenderPassBegin {
 	VkRenderPassBeginInfo _info;
 	std::vector<VkClearValue> _clear_values;
 };
+// dynamic rendering
+struct RenderingBegin {
+	struct Attachment {
+		Attachment(RenderingBegin* parent);
+		Attachment& image_view(VkImageView view);
+		Attachment& image_layout(VkImageLayout layout);
+		Attachment& load_store(VkAttachmentLoadOp load_op, VkAttachmentStoreOp store_op);
+		Attachment& clear_value(float depth, uint32_t stencil = 0);
+		Attachment& clear_value(float r, float g, float b, float a);
+		Attachment& clear_value(int32_t r, int32_t g, int32_t b, int32_t a);
+		Attachment& clear_value(uint32_t r, uint32_t g, uint32_t b, uint32_t a);
+		RenderingBegin& end();
+
+		RenderingBegin* _parent = nullptr;
+		VkRenderingAttachmentInfo _info;
+	};
+
+	RenderingBegin();
+	RenderingBegin& area(uint32_t width, uint32_t height, int32_t x = 0, int32_t y = 0);
+	Attachment& color_attachment();
+	Attachment& depth_stencil_attachment();
+
+	std::vector<Attachment> _color_attachments;
+	std::shared_ptr<Attachment> _depth_stencil_attachment;
+	VkRenderingInfo _info;
+};
 struct RenderPass {
 	RenderPass(RenderPassBuilder& builder);
 	~RenderPass();
@@ -474,7 +505,7 @@ struct RenderPass {
 
 	VkRenderPass vk_render_pass;
 	RenderPassBuilder builder;
-	RenderPassBegin vk_begin;
+	RenderPassBegin begin;
 };
 
 // layouts
@@ -511,6 +542,18 @@ struct GraphicsPipelineBuilder {
 		GraphicsPipelineBuilder* _parent = nullptr;
 		VkPipelineColorBlendAttachmentState _attachment_blend;
 	};
+	struct PipelineRendering {
+		PipelineRendering(GraphicsPipelineBuilder* parent);
+		PipelineRendering& add_color_attachment_format(VkFormat format);
+		PipelineRendering& depth_stencil_attachment_format(VkFormat);
+		PipelineRendering& add_color_attachment_format(otcv::Image* image);
+		PipelineRendering& depth_stencil_attachment_format(otcv::Image* image);
+		GraphicsPipelineBuilder& end();
+
+		GraphicsPipelineBuilder* _parent = nullptr;
+		std::vector<VkFormat> _color_attachment_formats;
+		VkPipelineRenderingCreateInfo _pipeline_rendering;
+	};
 
 	GraphicsPipelineBuilder();
 	GraphicsPipelineBuilder& render_pass(RenderPass* render_pass, uint32_t subpass = 0);
@@ -536,8 +579,11 @@ struct GraphicsPipelineBuilder {
 	GraphicsPipelineBuilder& blend_logic_op(VkLogicOp op);
 	GraphicsPipelineBuilder& blend_constants(float r, float g, float b, float a);
 	AttachmentBlend& blend_attachment(uint32_t n);
-	// dynamic state
+	// dynamic state, has nothing to do with dynamic rendering
 	GraphicsPipelineBuilder& add_dynamic_state(VkDynamicState dyn_state);
+	// dynamic rendering, optional
+	PipelineRendering& pipline_rendering();
+
 	GraphicsPipeline* build();
 
 	ShaderModule* _vertex_shader;
@@ -558,6 +604,7 @@ struct GraphicsPipelineBuilder {
 	std::vector<VkDynamicState> _dynamic_states;
 	RenderPass* _render_pass;
 	uint32_t _subpass;
+	std::shared_ptr<PipelineRendering> _pipeline_rendering; // dynamic rendering
 };
 struct GraphicsPipeline {
 	GraphicsPipeline(GraphicsPipelineBuilder& builder);

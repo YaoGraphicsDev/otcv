@@ -124,10 +124,25 @@ void pick_physical_device() {
             continue;
         }
 
-        // Check feature
-        if (feat.samplerAnisotropy == VK_FALSE) {
-            continue;
-        }
+        // TODO: Check all device features. See how features and extensions are initialized in create_device()
+        //if (feat.samplerAnisotropy == VK_FALSE) {
+        //    continue;
+        //}
+            //VkPhysicalDeviceDynamicRenderingFeatures featuresCheck{};
+    //featuresCheck.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+
+    //VkPhysicalDeviceFeatures2 features2{};
+    //features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    //features2.pNext = &featuresCheck;
+
+    //vkGetPhysicalDeviceFeatures2(g_physical_device.vk_physical_device, &features2);
+
+    //if (featuresCheck.dynamicRendering) {
+    //    std::cout << "Dynamic rendering is enabled.\n";
+    //}
+    //else {
+    //    std::cout << "Dynamic rendering is NOT enabled!\n";
+    //}
 
         // Check graphics queue family
         uint32_t& index = g_physical_device.queue_family_index;
@@ -157,29 +172,37 @@ void create_device() {
     float queue_priority = 1.0f;
     queue_info.pQueuePriorities = &queue_priority;
 
-    VkPhysicalDeviceFeatures feat_info{};
-    feat_info.samplerAnisotropy = VK_TRUE;
-    feat_info.fillModeNonSolid = VK_TRUE;
+    VkPhysicalDeviceFeatures device_feature{};
+    device_feature.samplerAnisotropy = VK_TRUE;
+    device_feature.fillModeNonSolid = VK_TRUE;
 
-    VkPhysicalDeviceVulkan12Features feat12_info{};
-    feat12_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    feat12_info.scalarBlockLayout = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features v12_feature{};
+    v12_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    v12_feature.scalarBlockLayout = VK_TRUE;
 
-    VkPhysicalDeviceFeatures2 feat2_info{};
-    feat2_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    feat2_info.pNext = &feat12_info;
-    feat2_info.features = feat_info;
+    VkPhysicalDeviceVulkan13Features v13_feature{};
+    v13_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    v13_feature.pNext = &v12_feature;
+    v13_feature.dynamicRendering = VK_TRUE;
+
+    VkPhysicalDeviceFeatures2 device_feature_2{};
+    device_feature_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    device_feature_2.pNext = &v13_feature;
+	device_feature_2.features = device_feature;
+
+    std::vector<const char*> non_core_device_extension_names = { "VK_KHR_swapchain"};
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    device_info.pNext = &feat2_info;
+    device_info.pNext = &device_feature_2;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
     device_info.enabledLayerCount = layer_count;
     device_info.ppEnabledLayerNames = layer_names;
-    device_info.enabledExtensionCount = device_extension_count;
-    device_info.ppEnabledExtensionNames = pp_device_extension_names; // assume physical device supports this
-    // device_info.pEnabledFeatures = &feat_info;
+    device_info.enabledExtensionCount = non_core_device_extension_names.size();
+    device_info.ppEnabledExtensionNames = non_core_device_extension_names.data(); // assume physical device supports this
+    // device_info.pEnabledFeatures = &feat_info
+
 
     g_device.reset(new Device(device_info));
 }
@@ -284,6 +307,7 @@ Context create_context(void* window_data) {
     if (g_physical_device.vk_physical_device == VK_NULL_HANDLE) {
         std::cout << "Cannot find suitable physical device" << std::endl;
     }
+
     create_device();
     get_queue();
     create_swapchain(window_data);
