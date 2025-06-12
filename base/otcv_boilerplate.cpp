@@ -282,7 +282,7 @@ void create_swapchain(void* window_data) {
     VkSwapchainCreateInfoKHR create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     create_info.surface = g_surface->vk_surface;
-    create_info.minImageCount = surface_caps.minImageCount + 1;
+    create_info.minImageCount = surface_caps.minImageCount;
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
     create_info.imageExtent = window_extent;
@@ -325,7 +325,7 @@ Context create_context(void* window_data) {
     return ctx;
 }
 
-void destroy_context(Context& ctx) {
+void destroy_context() {
     g_user_shader_modules.clear();
     g_user_buffers.clear();
     g_user_images.clear();

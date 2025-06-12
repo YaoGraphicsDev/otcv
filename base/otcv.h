@@ -99,7 +99,7 @@ struct Swapchain {
 	
 	Image* mock_image(uint32_t id);
 
-	VkSwapchainKHR swapchain;
+	VkSwapchainKHR vk_swapchain;
 	std::vector<VkImage> images{};
 	std::vector<VkImageView> views{};
 
@@ -119,6 +119,7 @@ struct GraphicsPipeline;
 struct ComputePipeline;
 struct VertexBuffer;
 struct DescriptorSet;
+struct ImageBlit;
 struct CommandBuffer {
 	CommandBuffer(VkCommandBufferAllocateInfo&);
 	~CommandBuffer();
@@ -144,9 +145,11 @@ struct CommandBuffer {
 	void cmd_set_viewport(float width, float height,
 		float x = 0.0f, float y = 0.0f,
 		float min_depth = 0.0f, float max_depth = 1.0f);
+	void cmd_set_scissor(float width, float height,
+		float x = 0.0f, float y = 0.0f);
 
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
-	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set);
+	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
 	void cmd_draw_indexed(uint32_t index_count,
 		uint32_t first_index = 0,
 		int32_t vertex_offset = 0,
@@ -162,8 +165,12 @@ struct CommandBuffer {
 	void cmd_copy_buffer(Buffer* src, Buffer* dst);
 
 	// memory barrier commands
-	void cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip = 0, uint32_t layer = 0);
+	// does not allow setting barriers to individual array layers. May lose synchronization granularity
+	void cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip = 0);
 	void cmd_buffer_memory_barrier(Buffer* buffer, ResourceState from_state, ResourceState to_state);
+
+	// blit
+	void cmd_image_blit(Image* src, Image* dst, ImageBlit& region, VkFilter filter = VK_FILTER_NEAREST);
 
 	VkCommandBuffer vk_command_buffer = VK_NULL_HANDLE;
 	VkCommandBufferAllocateInfo alloc_info = {};
@@ -204,9 +211,17 @@ struct QueueSubmit {
 	std::vector<Batch> _batches;
 	Fence* _fence = nullptr;
 };
+struct QueuePresent {
+	QueuePresent& image_index(uint32_t index);
+	QueuePresent& add_wait(Semaphore* semaphore);
+
+	uint32_t _image_index;
+	std::vector<VkSemaphore> _wait_semaphores;
+};
 struct Queue {
 	VkQueue vk_queue = VK_NULL_HANDLE;
 	void submit(QueueSubmit& info);
+	void present(QueuePresent& info);
 	void idle_wait();
 };
 
@@ -218,6 +233,8 @@ struct ShaderModuleBuilder {
 		Uniform(ShaderModuleBuilder* parent);
 		Uniform& type(VkDescriptorType type);
 		Uniform& name(const std::string& name);
+		Uniform& size(size_t size);
+		Uniform& field(const std::string& member, uint32_t offset);
 		Uniform& array_count(uint32_t n);
 		ShaderModuleBuilder& end();
 
@@ -225,8 +242,10 @@ struct ShaderModuleBuilder {
 		std::string _name = "";
 		VkDescriptorType _type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		uint32_t _array_count = 1;
+		size_t _size; // only relevant when building an UBO
+		std::map<std::string, VkDeviceSize> _field_offset_map; // only relevant when building an UBO
 	};
-	// ShaderModuleBuilder& spirv_path(const std::string& path);
+	ShaderModuleBuilder& name(const std::string& name);
 	ShaderModuleBuilder& spirv_binary(const uint32_t* data, size_t byte_size);
 	// ShaderModuleBuilder& spirv_reflect_path(const std::string& path);
 	Uniform& uniform(uint16_t set, uint16_t binding);
@@ -234,6 +253,7 @@ struct ShaderModuleBuilder {
 	
 	ShaderModule* build();
 
+	std::string _name;
 	const uint32_t* _spirv_data = nullptr;
 	size_t _spirv_byte_size = 0;
 	std::map<uint32_t, Uniform> _uniforms;
@@ -254,14 +274,15 @@ struct Image;
 struct Sampler;
 struct Buffer;
 struct DescriptorSet {
-	DescriptorSet(VkDescriptorSetAllocateInfo& info,
+	DescriptorSet(VkDescriptorSet vk_desc_set, VkDescriptorSetAllocateInfo alloc_info,
 		const std::vector<VkDescriptorSetLayoutBinding>& bindings,
 		bool free_required);
 	~DescriptorSet();
 	
 	void bind_image_sampler(uint32_t binding, Image** p_images, Sampler** p_samplers, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_storage_image(uint32_t binding, Image** p_images, uint32_t array_start = 0, uint32_t array_count = 1);
-	void bind_buffer(uint32_t binding, Buffer** p_buffers, uint32_t array_start = 0, uint32_t array_count = 1);
+	// The idea is to not use array of buffers, whether it be UBO or SSBO
+	void bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE);
 
 	VkDescriptorSet vk_desc_set = VK_NULL_HANDLE;
 	VkDescriptorSetAllocateInfo alloc_info = {};
@@ -288,7 +309,7 @@ struct DescriptorPool {
 	void destroy();
 
 	void reset();
-	DescriptorSet* allocate(DescriptorSetLayout* set_layout);
+	DescriptorSet* allocate(DescriptorSetLayout* set_layout, std::function<void()> oom_callback = nullptr);
 	void free(DescriptorSet* set);
 
 	VkDescriptorPool vk_desc_pool = VK_NULL_HANDLE;
@@ -301,18 +322,24 @@ struct DescriptorPool {
 struct Image;
 struct ImageBuilder {
 	ImageBuilder();
+	ImageBuilder& name(const std::string& name);
 	ImageBuilder& image_type(VkImageType type);
 	ImageBuilder& format(VkFormat format);
 	ImageBuilder& size(uint32_t width, uint32_t height, uint32_t depth);
-	ImageBuilder& mips(uint32_t n);
+	// 0 -- maximum levels of mip
+	ImageBuilder& enable_mips(bool enable = true);
 	ImageBuilder& layers(uint32_t n);
 	ImageBuilder& samples(uint32_t n);
 	ImageBuilder& usage(VkImageUsageFlags usage);
+	// Vulkan strictly limits the initial layout of an image to undefined. This function is not that useful
 	ImageBuilder& initial_layout(VkImageLayout layout);
 	ImageBuilder& view_type(VkImageViewType type);
 	ImageBuilder& aspect(VkImageAspectFlags aspect);
+	ImageBuilder& swizzle(VkComponentSwizzle r, VkComponentSwizzle g, VkComponentSwizzle b, VkComponentSwizzle a = VK_COMPONENT_SWIZZLE_A);
 	Image* build();
 
+	bool _has_mips = false;
+	std::string _name = ""; // to mark different kinds of textures
 	VkImageCreateInfo _image_info = {};
 	VkImageViewCreateInfo _view_info = {};
 };
@@ -321,15 +348,36 @@ struct Image {
 	~Image();
 	void destroy();
 
-	void populate(void* data, size_t byte_size, 
+	void populate_async(void* data, size_t byte_size, 
 		ResourceState target_state, ResourceState current_state = ResourceState::Created);
-	// 
+
+	void initialize_state_async(ResourceState target_state, ResourceState current_state = ResourceState::Created);
+
+	void wait_for_async();
+
+	// sync version
+	void populate(void* data, size_t byte_size,
+		ResourceState target_state, ResourceState current_state = ResourceState::Created);
+
 	void initialize_state(ResourceState target_state, ResourceState current_state = ResourceState::Created);
+
+	VkImageView view_of_layers(uint16_t base, uint16_t count);
 
 	ImageBuilder builder;
 	VkImage vk_image = VK_NULL_HANDLE;
 	VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+	// main view
 	VkImageView vk_view = VK_NULL_HANDLE;
+	// view of layers
+	// packed index start -- count
+	std::map<uint32_t, VkImageView> vk_layers_views;
+
+	struct AsyncPopulateCtx {
+		otcv::Fence* fence;
+		otcv::CommandBuffer* command_buffer;
+		otcv::Buffer* staging;
+	};
+	std::shared_ptr<AsyncPopulateCtx> async_ctx = nullptr;
 };
 
 struct Sampler;
@@ -338,7 +386,10 @@ struct SamplerBuilder {
 	SamplerBuilder& filter(VkFilter min, VkFilter mag);
 	SamplerBuilder& mipmap(VkSamplerMipmapMode mode);
 	SamplerBuilder& address_mode(VkSamplerAddressMode mode, VkBorderColor color = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
-	SamplerBuilder& lod(float min, float max, float mip_bias);
+	SamplerBuilder& address_mode_u(VkSamplerAddressMode mode, VkBorderColor color = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
+	SamplerBuilder& address_mode_v(VkSamplerAddressMode mode, VkBorderColor color = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
+	SamplerBuilder& address_mode_w(VkSamplerAddressMode mode, VkBorderColor color = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK);
+	SamplerBuilder& lod(float min, float max, float mip_bias = 0.0f);
 	SamplerBuilder& compare(VkCompareOp op);
 	Sampler* build();
 
@@ -377,7 +428,7 @@ struct Buffer {
 
 	void populate(void* data);
 
-	Buffer* copy_host_mapped(void* data, uint32_t offset, uint32_t size);
+	Buffer* copy_host_mapped(const void* data, uint32_t offset, uint32_t size);
 	void flush();
 
 	BufferBuilder builder;
@@ -390,6 +441,7 @@ struct Buffer {
 struct VertexBuffer;
 struct VertexBufferBuilder {
 	VertexBufferBuilder& add_binding(BufferBuilder& b_builder, void* data = nullptr);
+	VertexBufferBuilder& add_binding(); // for consturcting binding description only. Do not build after call
 	VertexBufferBuilder& add_attribute(uint32_t binding, VkFormat format, uint32_t byte_size);
 	VertexBufferBuilder& add_attribute_padding(uint32_t binding, uint32_t byte_size);
 	VertexBuffer* build();
@@ -398,6 +450,7 @@ struct VertexBufferBuilder {
 	std::vector<VkVertexInputAttributeDescription> _attr_descs;
 	std::vector<BufferBuilder> _buffer_builders;
 	std::vector<void*> _data_handles;
+	bool _buildable = true;
 };
 struct VertexBuffer {
 	VertexBuffer(VertexBufferBuilder& builder);
@@ -519,7 +572,7 @@ struct DescriptorSetLayout {
 };
 struct PipelineLayout {
 	PipelineLayout(
-		const std::vector<DescriptorSetLayout>& set_layouts,
+		const std::vector<DescriptorSetLayout*>& set_layouts,
 		const std::map<std::string, VkPushConstantRange>& push_const_members);
 	~PipelineLayout();
 
@@ -615,7 +668,7 @@ struct GraphicsPipeline {
 	// void cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set);
 	// void cmd_push_constant(CommandBuffer* cmd_buffer, const void* data, VkShaderStageFlags stage);
 	VkPipeline vk_pipeline;
-	std::vector<DescriptorSetLayout> desc_set_layouts;
+	std::vector<DescriptorSetLayout*> desc_set_layouts;
 	PipelineLayout* pipeline_layout;
 	GraphicsPipelineBuilder builder;
 };
@@ -634,9 +687,25 @@ struct ComputePipeline {
 
 	VkPipeline vk_pipeline;
 	ShaderModule* compute_shader;
-	std::vector<DescriptorSetLayout> desc_set_layouts;
+	std::vector<DescriptorSetLayout*> desc_set_layouts;
 	PipelineLayout* pipeline_layout;
 	VkComputePipelineCreateInfo info;
+};
+
+// blit
+struct ImageBlit {
+	ImageBlit();
+	ImageBlit& src_upper_bound(int32_t x, int32_t y, int32_t z = 1);
+	ImageBlit& src_lower_bound(int32_t x, int32_t y, int32_t z = 0);
+	ImageBlit& src_aspect(VkImageAspectFlags aspect);
+	ImageBlit& src_mip(uint32_t mip);
+
+	ImageBlit& dst_upper_bound(int32_t x, int32_t y, int32_t z = 1);
+	ImageBlit& dst_lower_bound(int32_t x, int32_t y, int32_t z = 0);
+	ImageBlit& dst_aspect(VkImageAspectFlags aspect);
+	ImageBlit& dst_mip(uint32_t mip);
+
+	VkImageBlit _image_blit = {};
 };
 
 // framebuffer
@@ -680,5 +749,5 @@ struct RawPtrLess {
 
 Context create_context(void* window_data);
 
-void destroy_context(Context& ctx);
+void destroy_context();
 }

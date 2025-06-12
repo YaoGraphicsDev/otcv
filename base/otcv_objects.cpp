@@ -142,15 +142,11 @@ void Fence::wait_reset() {
 }
 
 // Descriptor pool
-DescriptorSet::DescriptorSet(VkDescriptorSetAllocateInfo& info,
+DescriptorSet::DescriptorSet(VkDescriptorSet vk_desc_set, VkDescriptorSetAllocateInfo alloc_info,
 	const std::vector<VkDescriptorSetLayoutBinding>& bindings, 
 	bool free_required) {
-	VkResult result = vkAllocateDescriptorSets(g_device->vk_device, &info, &vk_desc_set);
-	if (result != VK_SUCCESS) {
-		std::cout << "cannot allocate descriptor set" << std::endl;
-		exit(1);
-	}
-	this->alloc_info = info;
+	this->vk_desc_set = vk_desc_set;
+	this->alloc_info = alloc_info;
 	this->bindings = bindings;
 	this->free_required = free_required;
 }
@@ -205,27 +201,24 @@ void DescriptorSet::bind_storage_image(uint32_t binding, Image** p_images, uint3
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
-void DescriptorSet::bind_buffer(uint32_t binding, Buffer** p_buffers, uint32_t array_start, uint32_t array_count) {
-	std::vector<VkDescriptorBufferInfo> buffer_infos(array_count);
-	for (uint32_t i = 0; i < array_count; ++i) {
-		VkDescriptorBufferInfo buffer_info{};
-		buffer_info.buffer = (*(p_buffers + i))->vk_buffer;
-		buffer_info.offset = 0;
-		buffer_info.range = VK_WHOLE_SIZE;
-		buffer_infos[i] = buffer_info;
-	}
+void DescriptorSet::bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize range) {
+	VkDescriptorBufferInfo buffer_info{};
+	buffer_info.buffer = buffer->vk_buffer;
+	buffer_info.offset = offset;
+	buffer_info.range = range;
 
 	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-		bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+		bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+		bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	write.dstSet = vk_desc_set;
 	write.dstBinding = binding;
-	write.dstArrayElement = array_start;
-	write.descriptorCount = array_count;
+	write.dstArrayElement = 0;
+	write.descriptorCount = 1;
 	write.descriptorType = bindings[binding].descriptorType;
-	write.pBufferInfo = buffer_infos.data();
+	write.pBufferInfo = &buffer_info;
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
@@ -253,14 +246,27 @@ void DescriptorPool::reset() {
 	vkResetDescriptorPool(g_device->vk_device, vk_desc_pool, 0);
 	desc_sets.clear();
 }
-DescriptorSet* DescriptorPool::allocate(DescriptorSetLayout* set_layout) {
+DescriptorSet* DescriptorPool::allocate(DescriptorSetLayout* set_layout, std::function<void()> oom_callback) {
 	VkDescriptorSetAllocateInfo alloc_info{};
 	alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	alloc_info.descriptorPool = vk_desc_pool;
 	alloc_info.descriptorSetCount = 1;
 	alloc_info.pSetLayouts = &set_layout->vk_desc_set_layout;
 	
-	DescriptorSet* set = new DescriptorSet(alloc_info,
+	VkDescriptorSet vk_desc_set;
+	VkResult result = vkAllocateDescriptorSets(g_device->vk_device, &alloc_info, &vk_desc_set);
+	if (result != VK_SUCCESS) {
+		if (result == VK_ERROR_OUT_OF_POOL_MEMORY || result == VK_ERROR_FRAGMENTED_POOL) {
+			oom_callback();
+			return nullptr;
+		}
+		else {
+			std::cout << "cannot allocate descriptor set" << std::endl;
+			exit(1);
+		}
+	}
+
+	DescriptorSet* set = new DescriptorSet(vk_desc_set, alloc_info,
 		set_layout->bindings,
 		builder._info.flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
 	desc_sets.insert(set);
@@ -276,7 +282,7 @@ void DescriptorPool::free(DescriptorSet* set) {
 
 // swapchain
 Swapchain::Swapchain(VkSwapchainCreateInfoKHR info) {
-	VkResult result = vkCreateSwapchainKHR(g_device->vk_device, &info, nullptr, &swapchain);
+	VkResult result = vkCreateSwapchainKHR(g_device->vk_device, &info, nullptr, &vk_swapchain);
 	if (result != VK_SUCCESS) {
 		std::cout << "Cannot create swap chain. Error code = " << result << std::endl;
 		exit(1);
@@ -284,14 +290,14 @@ Swapchain::Swapchain(VkSwapchainCreateInfoKHR info) {
 
 	// Acquire swap chain images
 	uint32_t swap_chain_image_count;
-	vkGetSwapchainImagesKHR(g_device->vk_device, swapchain, &swap_chain_image_count, nullptr);
+	vkGetSwapchainImagesKHR(g_device->vk_device, vk_swapchain, &swap_chain_image_count, nullptr);
 	if (swap_chain_image_count == 0) {
 		std::cout << "No image acquired from swap chain" << std::endl;
 		exit(1);
 	}
 	// images.resize(swap_chain_image_count);
 	std::vector<VkImage> vk_images(swap_chain_image_count);
-	result = vkGetSwapchainImagesKHR(g_device->vk_device, swapchain, &swap_chain_image_count, vk_images.data());
+	result = vkGetSwapchainImagesKHR(g_device->vk_device, vk_swapchain, &swap_chain_image_count, vk_images.data());
 	if (result != VK_SUCCESS) {
 		std::cout << "Cannot acquire " << swap_chain_image_count << " images from swap chain, error code = " << result << std::endl;
 		exit(1);
@@ -338,9 +344,11 @@ Swapchain::Swapchain(VkSwapchainCreateInfoKHR info) {
 
 		// create mock image
 		Image* mock_image = (Image*)malloc(sizeof(Image));
+		assert(mock_image);
 		mock_image->vk_image = i;
 		mock_image->vk_view = view;
 		mock_image->vk_memory = VK_NULL_HANDLE;
+		new (&mock_image->async_ctx) std::shared_ptr<Image::AsyncPopulateCtx>(nullptr);
 		mock_image->builder._view_info = image_view_create_info;
 		mock_image->builder._image_info = this->image_info;
 
@@ -355,9 +363,10 @@ Swapchain::~Swapchain() {
 		vkDestroyImageView(g_device->vk_device, v, nullptr);
 	}
 	for (Image* mock_image : mock_images) {
+		mock_image->wait_for_async();
 		free(mock_image);
 	}
-	vkDestroySwapchainKHR(g_device->vk_device, swapchain, nullptr);
+	vkDestroySwapchainKHR(g_device->vk_device, vk_swapchain, nullptr);
 }
 Image* Swapchain::mock_image(uint32_t id) {
 	return this->mock_images[id];
@@ -490,10 +499,13 @@ void CommandBuffer::cmd_end_render_pass(RenderPass* pass) {
 	pass->begin = {};
 }
 void CommandBuffer::cmd_begin_rendering(RenderingBegin& begin) {
-	std::vector<VkRenderingAttachmentInfo> vk_color_attachments;
-	for (auto& attachment : begin._color_attachments) {
-		vk_color_attachments.push_back(attachment._info);
+	std::vector<VkRenderingAttachmentInfo> vk_color_attachments(begin._color_attachments.size());
+	for (size_t i = 0; i < vk_color_attachments.size(); ++i) {
+		vk_color_attachments[i] = begin._color_attachments[i]._info;
 	}
+	//for (auto& attachment : begin._color_attachments) {
+	//	vk_color_attachments.push_back(attachment._info);
+	//}
 	begin._info.colorAttachmentCount = begin._color_attachments.size();
 	begin._info.pColorAttachments = vk_color_attachments.data();
 	if (begin._depth_stencil_attachment) {
@@ -534,6 +546,10 @@ void CommandBuffer::cmd_set_viewport(float width, float height, float x, float y
 	viewport.maxDepth = max_depth;
 	vkCmdSetViewport(this->vk_command_buffer, 0, 1, &viewport);
 }
+void CommandBuffer::cmd_set_scissor(float width, float height, float x, float y) {
+	VkRect2D scissor{ {x, y}, {width, height} };
+	vkCmdSetScissor(this->vk_command_buffer, 0, 1, &scissor);
+}
 void CommandBuffer::cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data) {
 	auto iter = pipeline->pipeline_layout->push_consts.find(name);
 	if (iter == pipeline->pipeline_layout->push_consts.end()) {
@@ -566,9 +582,10 @@ void CommandBuffer::cmd_push_constant(ComputePipeline* pipeline, const std::stri
 			data);
 	}
 }
-void CommandBuffer::cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set) {
+void CommandBuffer::cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
 	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-		pipeline->pipeline_layout->vk_pipeline_layout, 0, 1, &(set->vk_desc_set), 0, nullptr);
+		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
+		dynamic_offsets.size(), dynamic_offsets.data());
 }
 void CommandBuffer::cmd_draw_indexed(uint32_t index_count,
 	uint32_t first_index,
@@ -591,12 +608,19 @@ void CommandBuffer::cmd_copy_buffer(Buffer* src, Buffer* dst) {
 	region.size = dst->builder._info.size;
 	vkCmdCopyBuffer(vk_command_buffer, src->vk_buffer, dst->vk_buffer, 1, &region);
 }
-void CommandBuffer::cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip, uint32_t layer) {
-	transition_image_state(this, image, from_state, to_state, mip, layer);
+void CommandBuffer::cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip) {
+	transition_image_state(this, image, from_state, to_state, mip);
 }
 void CommandBuffer::cmd_buffer_memory_barrier(Buffer* buffer, ResourceState from_state, ResourceState to_state) {
 	transition_buffer_state(this, buffer, from_state, to_state);
 }
+void CommandBuffer::cmd_image_blit(Image* src, Image* dst, ImageBlit& region, VkFilter filter) {
+	vkCmdBlitImage(vk_command_buffer,
+		src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1, &region._image_blit, filter);
+}
+
 
 // queue
 void Queue::submit(QueueSubmit& info) {
@@ -618,7 +642,25 @@ void Queue::submit(QueueSubmit& info) {
 		info._fence ? info._fence->vk_fence : VK_NULL_HANDLE);
 
 	if (result != VK_SUCCESS) {
-		std::cout << "cannot submit to blit queue, error code = " << result << std::endl;
+		std::cout << "cannot submit to queue, error code = " << result << std::endl;
+		exit(1);
+	}
+}
+
+
+void Queue::present(QueuePresent& info) {
+	VkResult result;
+	VkPresentInfoKHR present_info{};
+	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	present_info.waitSemaphoreCount = info._wait_semaphores.size();
+	present_info.pWaitSemaphores = info._wait_semaphores.data();
+	present_info.swapchainCount = 1;
+	present_info.pSwapchains = &g_swapchain->vk_swapchain;
+	present_info.pImageIndices = &info._image_index;
+	present_info.pResults = &result;
+	vkQueuePresentKHR(vk_queue, &present_info);
+	if (result != VK_SUCCESS) {
+		std::cout << "cannot submit to present queue, error code = " << result << std::endl;
 		exit(1);
 	}
 }
@@ -694,6 +736,13 @@ void VertexBuffer::resize(uint32_t binding, size_t size) {
 
 // image
 Image::Image(ImageBuilder& builder) {
+	if (builder._has_mips) {
+		uint32_t levels = (uint32_t)(floor(log2(std::max(builder._image_info.extent.width, builder._image_info.extent.height))) + 1);
+		builder._image_info.mipLevels = levels;
+		builder._view_info.subresourceRange.levelCount = levels;
+	}
+
+
 	// Check is physical device support this particular type of image memory requested by user
 	VkImageFormatProperties props{};
 	VkResult result = vkGetPhysicalDeviceImageFormatProperties(g_physical_device.vk_physical_device,
@@ -734,25 +783,184 @@ Image::Image(ImageBuilder& builder) {
 	}
 
 	this->builder = std::move(builder);
+	async_ctx = nullptr;
 }
 Image::~Image() {
+	wait_for_async();
 	vkDestroyImage(g_device->vk_device, vk_image, nullptr);
 	vkFreeMemory(g_device->vk_device, vk_memory, nullptr);
 	vkDestroyImageView(g_device->vk_device, vk_view, nullptr);
+	for (auto& p : vk_layers_views) {
+		vkDestroyImageView(g_device->vk_device, p.second, nullptr);
+	}
 }
 void Image::destroy() {
 	std::shared_ptr<Image> ptr(std::shared_ptr<Image>(), this);
 	g_user_images.erase(ptr);
 }
-void Image::populate(void* data, size_t byte_size, 
+void Image::populate_async(void* data, size_t byte_size, 
 	ResourceState target_state, ResourceState current_state) {
-	staging_queued_copy(data, byte_size, this, current_state, target_state);
+	assert(builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+	if (byte_size == 0 || !data) {
+		return;
+	}
+
+	otcv::Buffer* staging = nullptr;
+	{
+		otcv::BufferBuilder bb;
+		staging = bb
+			.size(byte_size)
+			.usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+			.host_access(otcv::BufferBuilder::Access::Coherent)
+			.build();
+	}
+	memcpy(staging->mapped, data, byte_size);
+	assert(builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+	// unfinished async task, wait till the last task finishes
+	wait_for_async();
+
+	otcv::CommandBuffer* cmd_buf = g_command_pool->allocate();
+	cmd_buf->begin(true);
+
+	cmd_buf->cmd_image_memory_barrier(this, current_state, otcv::ResourceState::TransferDst);
+
+	VkBufferImageCopy copy_region{};
+	copy_region.bufferOffset = 0;
+	copy_region.bufferRowLength = 0;
+	copy_region.bufferImageHeight = 0;
+	copy_region.imageSubresource.aspectMask = builder._view_info.subresourceRange.aspectMask;
+	copy_region.imageSubresource.baseArrayLayer = 0;
+	copy_region.imageSubresource.layerCount = 1;
+	copy_region.imageSubresource.mipLevel = 0;
+	copy_region.imageOffset = { 0, 0, 0 };
+	copy_region.imageExtent = builder._image_info.extent;
+	vkCmdCopyBufferToImage(cmd_buf->vk_command_buffer, staging->vk_buffer, vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+	// generate mipmaps when necessary
+	if (builder._image_info.mipLevels > 1) {
+		assert(builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+		assert(builder._view_info.subresourceRange.levelCount == builder._image_info.mipLevels);
+		uint32_t base_width = builder._image_info.extent.width;
+		uint32_t base_height = builder._image_info.extent.height;
+		for (uint32_t level = 0; level < builder._image_info.mipLevels - 1; ++level) {
+			// get source level ready
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferDst, ResourceState::TransferSrc, level);
+			// get dest level ready
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::Created, ResourceState::TransferDst, level + 1);
+			// blit
+			ImageBlit region;
+			region
+				.src_upper_bound(base_width >> level, base_height >> level)
+				.src_mip(level)
+				.dst_upper_bound(base_width >> (level + 1), base_height >> (level + 1))
+				.dst_mip(level + 1);
+			cmd_buf->cmd_image_blit(this, this, region, VK_FILTER_LINEAR);
+			// convert source level to target state
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferSrc, target_state, level);
+		}
+	}
+	// convert highest level to target state
+	cmd_buf->cmd_image_memory_barrier(this, otcv::ResourceState::TransferDst, target_state, builder._image_info.mipLevels - 1);
+
+	cmd_buf->end();
+
+	otcv::Fence* fence = otcv::Fence::create(false);
+	{
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end().signal(fence);
+		g_queue.submit(submit);
+	}
+	// g_queue.idle_wait();
+	// g_command_pool->free(cmd_buffer);
+
+	async_ctx.reset(new AsyncPopulateCtx);
+	async_ctx->command_buffer = cmd_buf;
+	async_ctx->fence = fence;
+	async_ctx->staging = staging;
+
+	// staging_queued_copy(data, byte_size, this, current_state, target_state);
 }
+
+void Image::initialize_state_async(ResourceState target_state, ResourceState current_state) {
+	// unfinished async task, wait till the last task finishes
+	wait_for_async();
+
+	otcv::CommandBuffer* cmd_buf = g_command_pool->allocate();
+	cmd_buf->begin(true);
+	cmd_buf->cmd_image_memory_barrier(this, current_state, target_state);
+	cmd_buf->end();
+
+	otcv::Fence* fence = otcv::Fence::create(false);
+	{
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end().signal(fence);
+		g_queue.submit(submit);
+	}
+
+	async_ctx.reset(new AsyncPopulateCtx);
+	async_ctx->command_buffer = cmd_buf;
+	async_ctx->fence = fence;
+	async_ctx->staging = nullptr;
+}
+
+void Image::wait_for_async() {
+	if (!async_ctx) {
+		// nothing to wait
+		return;
+	}
+	if (async_ctx->fence) {
+		async_ctx->fence->wait_reset();
+		async_ctx->fence->destroy();
+	}
+	if (async_ctx->command_buffer) {
+		g_command_pool->free(async_ctx->command_buffer);
+	}
+	if (async_ctx->staging) {
+		async_ctx->staging->destroy();
+	}
+
+	async_ctx = nullptr;
+}
+void Image::populate(void* data, size_t byte_size,
+	ResourceState target_state, ResourceState current_state) {
+	populate_async(data, byte_size, target_state, current_state);
+	wait_for_async();
+}
+
 void Image::initialize_state(ResourceState target_state, ResourceState current_state) {
-	CommandBuffer* command_buffer = otcv::begin_single_time_command_buffer();
-	command_buffer->cmd_image_memory_barrier(this, current_state, target_state);
-	end_single_time_command_buffer(command_buffer);
+	initialize_state_async(target_state, current_state);
+	wait_for_async();
 }
+
+VkImageView Image::view_of_layers(uint16_t base, uint16_t count) {
+	assert(builder._image_info.arrayLayers > base);
+	assert(builder._image_info.arrayLayers >= base + count);
+	auto iter = vk_layers_views.find(pack(base, count));
+	if (iter != vk_layers_views.end()) {
+		return iter->second;
+	}
+
+	VkImageViewCreateInfo layer_view_info = builder._view_info;
+	layer_view_info.subresourceRange.baseArrayLayer = base;
+	layer_view_info.subresourceRange.layerCount = count;
+	VkImageView vk_layers_view;
+	VkResult result = vkCreateImageView(g_device->vk_device, &layer_view_info, nullptr, &vk_layers_view);
+	if (result != VK_SUCCESS) {
+		std::cout << "cannot create layer view for baseArrayLayer = " << base << ", layerCount = " << count << ", error code = " << result << std::endl;
+		exit(1);
+	}
+	vk_layers_views[pack(base, count)] = vk_layers_view;
+	return vk_layers_view;
+}
+
 
 // buffer
 Buffer::Buffer(BufferBuilder& builder) {
@@ -811,7 +1019,7 @@ void Buffer::populate(void* data) {
 		staging_queued_copy(data, this);
 	}
 }
-Buffer* Buffer::copy_host_mapped(void* data, uint32_t offset, uint32_t size) {
+Buffer* Buffer::copy_host_mapped(const void* data, uint32_t offset, uint32_t size) {
 	// cannot perform mapped memory copy on host invisible memory
 	assert(builder._mem_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	assert(mapped);
@@ -897,10 +1105,10 @@ DescriptorSetLayout::~DescriptorSetLayout() {
 	vkDestroyDescriptorSetLayout(g_device->vk_device, vk_desc_set_layout, nullptr);
 }
 
-PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout>& set_layouts, const std::map<std::string, VkPushConstantRange>& push_const_members) {
+PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout*>& set_layouts, const std::map<std::string, VkPushConstantRange>& push_const_members) {
 	std::vector<VkDescriptorSetLayout> vk_desc_set_layouts;
 	for (auto& layout : set_layouts) {
-		vk_desc_set_layouts.push_back(layout.vk_desc_set_layout);
+		vk_desc_set_layouts.push_back(layout->vk_desc_set_layout);
 	}
 
 	// Vulkan does not accept same stage flags in different push constant ranges
@@ -940,7 +1148,7 @@ PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout>& set_layou
 	
 	VkPipelineLayoutCreateInfo pipeline_layout_create{};
 	pipeline_layout_create.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipeline_layout_create.setLayoutCount = vk_desc_set_layouts.size();
+	pipeline_layout_create.setLayoutCount = (uint32_t)vk_desc_set_layouts.size();
 	pipeline_layout_create.pSetLayouts = vk_desc_set_layouts.data();
 	pipeline_layout_create.pushConstantRangeCount = ranges.size();
 	pipeline_layout_create.pPushConstantRanges = ranges.data();
@@ -1028,12 +1236,11 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 			if (binding >= layout_binding_set[set].size()) {
 				layout_binding_set[set].resize(binding + 1);
 			}
-			VkDescriptorSetLayoutBinding vk_layout_binding = {};
-			vk_layout_binding.binding = binding;
-			vk_layout_binding.descriptorType = p.second._type;
-			vk_layout_binding.descriptorCount = p.second._array_count;
-			vk_layout_binding.stageFlags = stage;
-			layout_binding_set[set][binding] = vk_layout_binding;
+			layout_binding_set[set][binding].binding = binding;
+			layout_binding_set[set][binding].descriptorType = p.second._type;
+			layout_binding_set[set][binding].descriptorCount = p.second._array_count;
+			layout_binding_set[set][binding].stageFlags |= stage;
+			layout_binding_set[set][binding].pImmutableSamplers = nullptr;
 		}
 	};
 
@@ -1065,7 +1272,7 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 	
 	// create descriptor set layouts and pipeline layout
 	for (auto& set_bindings : layout_binding_set) {
-		desc_set_layouts.emplace_back(set_bindings);
+		desc_set_layouts.push_back(new DescriptorSetLayout(set_bindings));
 	}
 	pipeline_layout = new PipelineLayout(desc_set_layouts, push_constant_ranges);
 
@@ -1102,6 +1309,9 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 GraphicsPipeline::~GraphicsPipeline() {
 	delete pipeline_layout;
 	vkDestroyPipeline(g_device->vk_device, vk_pipeline, nullptr);
+	for (DescriptorSetLayout* set_layout : desc_set_layouts) {
+		delete set_layout;
+	}
 }
 void GraphicsPipeline::destroy() {
 	std::shared_ptr<GraphicsPipeline> ptr(std::shared_ptr<GraphicsPipeline>(), this);
@@ -1155,7 +1365,7 @@ ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
 	collect_push_constants();
 
 	for (auto& set_bindings : layout_binding_set) {
-		desc_set_layouts.emplace_back(set_bindings);
+		desc_set_layouts.emplace_back(new DescriptorSetLayout(set_bindings));
 	}
 
 	pipeline_layout = new PipelineLayout(desc_set_layouts, push_constant_ranges);
@@ -1195,6 +1405,9 @@ ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
 ComputePipeline::~ComputePipeline() {
 	delete pipeline_layout;
 	vkDestroyPipeline(g_device->vk_device, vk_pipeline, nullptr);
+	for (DescriptorSetLayout* set_layout : desc_set_layouts) {
+		delete set_layout;
+	}
 }
 
 ComputePipeline* ComputePipeline::create(ShaderModule* compute_shader) {
@@ -1213,14 +1426,75 @@ void ComputePipeline::cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, Descrip
 	vkCmdBindDescriptorSets(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline_layout->vk_pipeline_layout, 0, 1, &(set->vk_desc_set), 0, nullptr);
 }
-//void ComputePipeline::cmd_push_constant(CommandBuffer* cmd_buffer, const void* data) {	
-//	if (pipeline_layout->push_const_ranges.empty()) {
-//		return;
-//	}
-//	vkCmdPushConstants(cmd_buffer->vk_command_buffer, pipeline_layout->vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-//		this->pipeline_layout->push_const_ranges[0].offset,
-//		this->pipeline_layout->push_const_ranges[0].size, data);
-//}
+ImageBlit::ImageBlit() {
+
+	_image_blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	_image_blit.srcSubresource.mipLevel = 0;
+	_image_blit.srcSubresource.baseArrayLayer = 0;
+	_image_blit.srcSubresource.layerCount = 1;
+
+	_image_blit.srcOffsets[0].x = 0;
+	_image_blit.srcOffsets[0].y = 0;
+	_image_blit.srcOffsets[0].z = 0;
+
+	_image_blit.srcOffsets[1].x = 0;
+	_image_blit.srcOffsets[1].y = 0;
+	_image_blit.srcOffsets[1].z = 0;
+
+	_image_blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	_image_blit.dstSubresource.mipLevel = 0;
+	_image_blit.dstSubresource.baseArrayLayer = 0;
+	_image_blit.dstSubresource.layerCount = 1;
+
+	_image_blit.dstOffsets[0].x = 0;
+	_image_blit.dstOffsets[0].y = 0;
+	_image_blit.dstOffsets[0].z = 0;
+
+	_image_blit.dstOffsets[1].x = 0;
+	_image_blit.dstOffsets[1].y = 0;
+	_image_blit.dstOffsets[1].z = 0;
+}
+ImageBlit& ImageBlit::src_upper_bound(int32_t x, int32_t y, int32_t z) {
+	_image_blit.srcOffsets[1].x = x;
+	_image_blit.srcOffsets[1].y = y;
+	_image_blit.srcOffsets[1].z = z;
+	return *this;
+}
+ImageBlit& ImageBlit::src_lower_bound(int32_t x, int32_t y, int32_t z) {
+	_image_blit.srcOffsets[0].x = x;
+	_image_blit.srcOffsets[0].y = y;
+	_image_blit.srcOffsets[0].z = z;
+	return *this;
+}
+ImageBlit& ImageBlit::src_aspect(VkImageAspectFlags aspect) {
+	_image_blit.srcSubresource.aspectMask = aspect;
+	return *this;
+}
+ImageBlit& ImageBlit::src_mip(uint32_t mip) {
+	_image_blit.srcSubresource.mipLevel = mip;
+	return *this;
+}
+
+ImageBlit& ImageBlit::dst_upper_bound(int32_t x, int32_t y, int32_t z) {
+	_image_blit.dstOffsets[1].x = x;
+	_image_blit.dstOffsets[1].y = y;
+	_image_blit.dstOffsets[1].z = z;
+	return *this;
+}
+ImageBlit& ImageBlit::dst_lower_bound(int32_t x, int32_t y, int32_t z) {
+	_image_blit.dstOffsets[0].x = x;
+	_image_blit.dstOffsets[0].y = y;
+	_image_blit.dstOffsets[0].z = z;
+	return *this;
+}
+ImageBlit& ImageBlit::dst_aspect(VkImageAspectFlags aspect) {
+	_image_blit.dstSubresource.aspectMask = aspect;
+	return *this;
+}
+ImageBlit& ImageBlit::dst_mip(uint32_t mip) {
+	_image_blit.dstSubresource.mipLevel = mip;
+	return *this;
+}
 
 Framebuffer::Framebuffer(FramebufferBuilder& builder) {
 	builder._info.attachmentCount = builder._attachments.size();

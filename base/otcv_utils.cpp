@@ -47,18 +47,40 @@ void strip_all_extensions(const std::string& filepath, std::string& filename, st
 	}
 }
 
-void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count, ShaderModuleBuilder& builder) {
+void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count, ShaderModuleBuilder& builder, ShaderLoadHint::Hint hint, void* custom) {
 	spirv_cross::Compiler compiler(spirv_bin, word_count);
 	spirv_cross::ShaderResources shader_res = compiler.get_shader_resources();
+
+	std::set<uint16_t>* dynamic_sets = nullptr;
+	if (hint == ShaderLoadHint::Hint::DynamicUBO && custom) {
+		dynamic_sets = static_cast<std::set<uint16_t>*>(custom);
+	}
 
 	// ubos
 	for (const auto& ubo : shader_res.uniform_buffers) {
 		uint32_t set = compiler.get_decoration(ubo.id, spv::DecorationDescriptorSet);
 		uint32_t binding = compiler.get_decoration(ubo.id, spv::DecorationBinding);
 		std::string name = compiler.get_name(ubo.id);
-		builder
-			.uniform(uint16_t(set), uint16_t(binding))
-			.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+		const spirv_cross::SPIRType& type = compiler.get_type(ubo.base_type_id);
+		size_t size = compiler.get_declared_struct_size(type); // layout of ubo is std140 by default
+
+		ShaderModuleBuilder::Uniform& ubo_builder = builder.uniform(uint16_t(set), uint16_t(binding));
+		// check hints
+		if (hint == ShaderLoadHint::Hint::DynamicUBO && dynamic_sets->find(set) != dynamic_sets->end()) {
+			ubo_builder.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+		}
+		else {
+			ubo_builder.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+		}
+		// set all member names inside UBO and their offsets
+		for (uint32_t i = 0; i < type.member_types.size(); ++i) {
+			std::string member_name = compiler.get_member_name(ubo.base_type_id, i);
+			uint32_t offset = compiler.get_member_decoration(ubo.base_type_id, i, spv::DecorationOffset);
+			ubo_builder.field(member_name, offset);
+		}
+
+		ubo_builder
+			.size(size)
 			.name(name)
 			.end();
 	}
@@ -131,22 +153,23 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 	}
 }
 
-ShaderModule* load_shader(const uint32_t* spirv_bin, uint32_t byte_size) {
+ShaderModule* load_shader(const std::string& name, const uint32_t* spirv_bin, uint32_t byte_size, ShaderLoadHint::Hint hint, void* custom) {
 	ShaderModuleBuilder builder;
+	builder.name(name);
 	builder.spirv_binary(spirv_bin, byte_size);
 
-	get_spirv_resource_bindings(spirv_bin, byte_size / sizeof(uint32_t), builder);
+	get_spirv_resource_bindings(spirv_bin, byte_size / sizeof(uint32_t), builder, hint, custom);
 
 	ShaderModule* shader = builder.build();
 	return shader;
 }
 
-ShaderModule* load_shader(const std::string& spirv_path) {
-	std::vector<char> code = std::move(read_file_binary(spirv_path));
-	return load_shader((uint32_t*)code.data(), code.size());
+ShaderModule* load_shader(const std::string& spirv_path, ShaderLoadHint::Hint hint, void* custom) {
+	std::vector<char> code_bytes = std::move(read_file_binary(spirv_path));
+	return load_shader(spirv_path, (uint32_t*)code_bytes.data(), code_bytes.size(), hint, custom);
 }
 
-std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& dir) {
+std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& dir, ShaderLoadHint hint) {
 	if (!std::filesystem::exists(dir)) {
 		std::cout << "Directory " << dir << " does not exist" << std::endl;
 		exit(1);
@@ -160,16 +183,32 @@ std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& di
 	for (const auto& entry : std::filesystem::directory_iterator(dir)) {
 		if (entry.is_regular_file()) {
 			std::string filename = entry.path().stem().string();
-			std::string extension = entry.path().extension().string();
-			if (extension == ".spv") {
-				shader_map[filename] = load_shader(entry.path().string());
-			} else {
-				std::cout << "unrecognized file extension of file: " << entry.path().string() << std::endl;
+			std::string extension_spv = entry.path().extension().string();
+			std::string extension_type = entry.path().stem().extension().string();
+			if (extension_spv != ".spv") {
+				std::cout << "unrecognized file extension of file : " << entry.path().string() << std::endl;
+				continue;
+			}
+			if (extension_type == ".vert") {
+				shader_map[filename] = load_shader(entry.path().string(), hint.vertex_hint, hint.vertex_custom);
+			}
+			if (extension_type == ".frag") {
+				shader_map[filename] = load_shader(entry.path().string(), hint.fragment_hint, hint.fragment_custom);
+			}
+			if (extension_type == ".comp") {
+				shader_map[filename] = load_shader(entry.path().string(), hint.compute_hint, hint.compute_custom);
 			}
 		}
 	}
 
 	return shader_map;
+}
+
+void unload_shader_blob(ShaderBlob& blob) {
+	for (auto& p : blob) {
+		p.second->destroy();
+	}
+	blob.clear();
 }
 
 uint32_t calc_group_count(uint32_t total_invo, uint32_t group_size) {
@@ -272,6 +311,7 @@ void staging_queued_copy(void* data, size_t size, Image* image, ResourceState sr
 		.build();
 	otcv::CommandBuffer* command_buffer = otcv::begin_single_time_command_buffer();
 	memcpy(staging->mapped, data, size);
+	assert(image->builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	command_buffer->cmd_image_memory_barrier(image, src_state, otcv::ResourceState::TransferDst);
 
 	VkBufferImageCopy copy_region{};
@@ -292,7 +332,8 @@ void staging_queued_copy(void* data, size_t size, Image* image, ResourceState sr
 	otcv::end_single_time_command_buffer(command_buffer);
 	staging->destroy();
 }
-void transition_image_state(CommandBuffer* command_buffer, const Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip, uint32_t layer) {
+
+void transition_image_state(CommandBuffer* command_buffer, const Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip) {
 	VkImageMemoryBarrier barrier{};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -306,8 +347,8 @@ void transition_image_state(CommandBuffer* command_buffer, const Image* image, R
 	}
 	barrier.subresourceRange.baseMipLevel = mip;
 	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = layer;
-	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = image->builder._image_info.arrayLayers;
 
 	VkPipelineStageFlags src_stage_mask = VK_PIPELINE_STAGE_NONE;
 	VkPipelineStageFlags dst_stage_mask = VK_PIPELINE_STAGE_NONE;
@@ -357,6 +398,11 @@ void transition_image_state(CommandBuffer* command_buffer, const Image* image, R
 		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		src_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	}
+	else if (from_state == ResourceState::DepthStencilAttachment) {
+		barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		src_stage_mask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	}
 	else if (from_state == ResourceState::Present) {
 		/* "Presentation is a read-only operation that will not affect the content of the presentable images"
 		* source: https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkQueuePresentKHR.html
@@ -372,6 +418,7 @@ void transition_image_state(CommandBuffer* command_buffer, const Image* image, R
 	}
 	else {
 		std::cout << "cannot find suitable start state for pipeline barrier, from_state = " << (uint32_t)from_state << std::endl;
+		assert(false);
 		exit(1);
 	}
 
@@ -430,6 +477,7 @@ void transition_image_state(CommandBuffer* command_buffer, const Image* image, R
 	}
 	else {
 		std::cout << "cannot find suitable end state for pipeline barrier, to_state = " << (uint32_t)to_state << std::endl;
+		assert(false);
 		exit(1);
 	}
 	vkCmdPipelineBarrier(command_buffer->vk_command_buffer, src_stage_mask, dst_stage_mask, 0,
@@ -470,6 +518,7 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 	}
 	else {
 		std::cout << "cannot find suitable start state for pipeline barrier, from_state = " << (uint32_t)from_state << std::endl;
+		assert(false);
 		exit(1);
 	}
 
@@ -487,6 +536,7 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 	}
 	else {
 		std::cout << "cannot find suitable end state for pipeline barrier, to_state = " << (uint32_t)to_state << std::endl;
+		assert(false);
 		exit(1);
 	}
 
@@ -504,4 +554,48 @@ void wait_for_and_reset_fences(std::vector<Fence*> fences) {
 	vkWaitForFences(g_device->vk_device, vk_fences.size(), vk_fences.data(), VK_TRUE, UINT64_MAX);
 	vkResetFences(g_device->vk_device, vk_fences.size(), vk_fences.data());
 }
+
+ShaderModuleBuilder::Uniform& uniform_at(GraphicsPipeline* pipeline, uint16_t set, uint16_t binding) {
+	uint32_t key = otcv::pack(set, binding);
+	// This specific set & binding might live in vertex or fragment shader, or both
+	// if in both, both declarations are supposed to be exactly the same. If not, go with the one in fragment
+	auto v_iter = pipeline->builder._vertex_shader->builder._uniforms.find(key);
+	auto f_iter = pipeline->builder._fragment_shader->builder._uniforms.find(key);
+
+	auto& iter = f_iter;
+	if (f_iter != pipeline->builder._fragment_shader->builder._uniforms.end()) {
+		iter = f_iter;
+	}
+	else if (v_iter != pipeline->builder._vertex_shader->builder._uniforms.end()) {
+		iter = v_iter;
+	}
+	else {
+		assert(false);
+		std::cout << "Cannot find uniform at set = " << set << ", binding = " << binding << std::endl;
+		return ShaderModuleBuilder::Uniform();
+	}
+
+	return iter->second;
+}
+
+VertexBuffer* screen_quad_ndc() {
+	std::vector<float> v_data = {
+		// x | y | z | u | v
+		-1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+		-1.0f,  3.0f, 0.0f, 0.0f, 2.0f,
+		 3.0f, -1.0f, 0.0f, 2.0f, 0.0f,
+	};
+
+	BufferBuilder bb;
+	bb.size(v_data.size() * sizeof(float))
+		.host_access(BufferBuilder::Access::Invisible)
+		.usage(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+	VertexBufferBuilder vbb;
+	vbb.add_binding(bb, v_data.data())
+		.add_attribute(0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(float) * 3)
+		.add_attribute(0, VK_FORMAT_R32G32_SFLOAT, sizeof(float) * 2);
+	otcv::VertexBuffer* vb = vbb.build();
+	return vb;
+}
+
 }

@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <cassert>
 
 namespace otcv {
 
@@ -25,7 +26,9 @@ SamplerBuilder::SamplerBuilder() {
 	_info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
 	_info.compareEnable = VK_FALSE;
 	_info.minLod = 0.0f;
-	_info.maxLod = 0.0f;
+	// https://registry.khronos.org/vulkan/specs/latest/man/html/VK_LOD_CLAMP_NONE.html
+	// essntially telling the sampler to use all levels of mips there are
+	_info.maxLod = VK_LOD_CLAMP_NONE; 
 	_info.unnormalizedCoordinates = VK_FALSE;
 }
 SamplerBuilder& SamplerBuilder::filter(VkFilter min, VkFilter mag) {
@@ -54,6 +57,21 @@ SamplerBuilder& SamplerBuilder::address_mode(VkSamplerAddressMode mode, VkBorder
 	_info.borderColor = color;
 	return *this;
 }
+SamplerBuilder& SamplerBuilder::address_mode_u(VkSamplerAddressMode mode, VkBorderColor color) {
+	_info.addressModeU = mode;
+	_info.borderColor = color;
+	return *this;
+}
+SamplerBuilder& SamplerBuilder::address_mode_v(VkSamplerAddressMode mode, VkBorderColor color) {
+	_info.addressModeV = mode;
+	_info.borderColor = color;
+	return *this;
+}
+SamplerBuilder& SamplerBuilder::address_mode_w(VkSamplerAddressMode mode, VkBorderColor color) {
+	_info.addressModeW = mode;
+	_info.borderColor = color;
+	return *this;
+}
 SamplerBuilder& SamplerBuilder::lod(float min, float max, float mip_bias) {
 	_info.minLod = min;
 	_info.maxLod = max;
@@ -73,6 +91,9 @@ Sampler* SamplerBuilder::build() {
 
 // image builder
 ImageBuilder::ImageBuilder() {
+	_has_mips = false;
+	_name = "";
+
 	_image_info = VkImageCreateInfo{};
 	_image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	_image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -103,6 +124,10 @@ ImageBuilder::ImageBuilder() {
 	_view_info.subresourceRange.baseArrayLayer = 0;
 	_view_info.subresourceRange.layerCount = 1;
 }
+ImageBuilder& ImageBuilder::name(const std::string& name) {
+	_name = name;
+	return *this;
+}
 ImageBuilder& ImageBuilder::image_type(VkImageType type) {
 	_image_info.imageType = type;
 	return *this;
@@ -116,9 +141,8 @@ ImageBuilder& ImageBuilder::size(uint32_t width, uint32_t height, uint32_t depth
 	_image_info.extent = VkExtent3D{ width, height, depth };
 	return *this;
 }
-ImageBuilder& ImageBuilder::mips(uint32_t n) {
-	_image_info.mipLevels = n;
-	_view_info.subresourceRange.levelCount = n;
+ImageBuilder& ImageBuilder::enable_mips(bool enable) {
+	_has_mips = enable;
 	return *this;
 }
 ImageBuilder& ImageBuilder::layers(uint32_t n) {
@@ -144,6 +168,14 @@ ImageBuilder& ImageBuilder::view_type(VkImageViewType type) {
 }
 ImageBuilder& ImageBuilder::aspect(VkImageAspectFlags aspect) {
 	_view_info.subresourceRange.aspectMask = aspect;
+	return *this;
+}
+
+ImageBuilder& ImageBuilder::swizzle(VkComponentSwizzle r, VkComponentSwizzle g, VkComponentSwizzle b, VkComponentSwizzle a) {
+	_view_info.components.r = r;
+	_view_info.components.g = g;
+	_view_info.components.b = b;
+	_view_info.components.a = a;
 	return *this;
 }
 Image* ImageBuilder::build() {
@@ -204,6 +236,14 @@ VertexBufferBuilder& VertexBufferBuilder::add_binding(BufferBuilder& b_builder, 
 	_data_handles.push_back(data);
 	return *this;
 }
+VertexBufferBuilder& VertexBufferBuilder::add_binding() {
+	_binding_descs.emplace_back();
+	_binding_descs.back().binding = _binding_descs.size() - 1;
+	_binding_descs.back().stride = 0;
+	_binding_descs.back().inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	_buildable = false;
+	return *this;
+}
 VertexBufferBuilder& VertexBufferBuilder::add_attribute(uint32_t binding, VkFormat format, uint32_t byte_size) {
 	_attr_descs.emplace_back();
 	_attr_descs.back().location = _attr_descs.size() - 1;
@@ -219,6 +259,7 @@ VertexBufferBuilder& VertexBufferBuilder::add_attribute_padding(uint32_t binding
 	return *this;
 }
 VertexBuffer* VertexBufferBuilder::build() {
+	assert(_buildable);
 	VertexBuffer* vb = new VertexBuffer(*this);
 	g_user_vertex_buffers.insert(std::shared_ptr<VertexBuffer>(vb));
 	return vb;
@@ -229,17 +270,29 @@ ShaderModuleBuilder::Uniform::Uniform() {
 	this->_parent = nullptr;
 	this->_name = "";
 	this->_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	this->_size = 0;
 	this->_array_count = 1;
 }
 ShaderModuleBuilder::Uniform::Uniform(ShaderModuleBuilder* parent) {
 	this->_parent = parent;
 	this->_name = "";
 	this->_type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	this->_size = 0;
 	this->_array_count = 1;
 }
 ShaderModuleBuilder::Uniform&
 ShaderModuleBuilder::Uniform::type(VkDescriptorType type) {
 	this->_type = type;
+	return *this;
+}
+ShaderModuleBuilder::Uniform&
+ShaderModuleBuilder::Uniform::size(size_t size) {
+	this->_size = size;
+	return *this;
+}
+ShaderModuleBuilder::Uniform&
+ShaderModuleBuilder::Uniform::field(const std::string& member, uint32_t offset) {
+	this->_field_offset_map[member] = offset;
 	return *this;
 }
 ShaderModuleBuilder::Uniform&
@@ -255,10 +308,10 @@ ShaderModuleBuilder::Uniform::array_count(uint32_t n) {
 ShaderModuleBuilder& ShaderModuleBuilder::Uniform::end() {
 	return *_parent;
 }
-//ShaderModuleBuilder& ShaderModuleBuilder::spirv_path(const std::string& path) {
-//	this->_spirv_path = path;
-//	return *this;
-//}
+ShaderModuleBuilder& ShaderModuleBuilder::name(const std::string& name) {
+	this->_name = name;
+	return *this;
+}
 ShaderModuleBuilder& ShaderModuleBuilder::spirv_binary(const uint32_t* data, size_t byte_size) {
 	this->_spirv_data = data;
 	this->_spirv_byte_size = byte_size;
@@ -319,6 +372,15 @@ QueueSubmit::Batch::add_wait(Semaphore* semaphore, VkPipelineStageFlags wait_sta
 QueueSubmit::Batch&
 QueueSubmit::Batch::add_signal(Semaphore* semaphore) {
 	this->_signal_semaphores.push_back(semaphore->vk_semaphore);
+	return *this;
+}
+
+QueuePresent& QueuePresent::image_index(uint32_t index) {
+	_image_index = index;
+	return *this;
+}
+QueuePresent& QueuePresent::add_wait(Semaphore* semaphore) {
+	_wait_semaphores.push_back(semaphore->vk_semaphore);
 	return *this;
 }
 
@@ -529,9 +591,9 @@ RenderingBegin::RenderingBegin() {
 	_info.layerCount = 1;
 	_info.viewMask = 0;
 	_info.colorAttachmentCount = 0;
-	_info.pColorAttachments = nullptr;
-	_info.pDepthAttachment = nullptr;
-	_info.pStencilAttachment = nullptr;
+	_info.pColorAttachments = VK_NULL_HANDLE;
+	_info.pDepthAttachment = VK_NULL_HANDLE;
+	_info.pStencilAttachment = VK_NULL_HANDLE;
 
 	_depth_stencil_attachment = nullptr;
 }

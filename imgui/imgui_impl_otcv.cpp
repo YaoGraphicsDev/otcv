@@ -16,7 +16,7 @@ void ImGui_ImplOTCV_Init(ImGui_ImplOTCV_InitInfo* info) {
     io.BackendRendererName = "imgui_impl_OTCV";
 
     IM_ASSERT(info->queue != nullptr);
-    IM_ASSERT(!info->color_attachments.empty());
+    // IM_ASSERT(!info->color_attachments.empty());
 
     bd->OTCVInitInfo = *info;
 
@@ -31,36 +31,6 @@ void ImGui_ImplOTCV_CreateOTCVObjects() {
     {
         otcv::SamplerBuilder builder;
         bd->sampler = builder.filter(VK_FILTER_LINEAR, VK_FILTER_LINEAR).build();
-    }
-    // renderpass, store color attachment contents
-    {
-        otcv::RenderPassBuilder builder;
-        builder
-            .attachment()
-            .format_samples(v->color_attachments[0]->builder._image_info.format)
-            .layouts(v->intial_layout, v->final_layout)
-            .load_store(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE)
-            .end()
-            .subpass()
-            .ref_color(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-            .end();
-
-        if (v->pre_pass_wait_stage != VK_PIPELINE_STAGE_NONE && v->pre_pass_access != VK_ACCESS_NONE) {
-            builder.dependencies()
-                .src(VK_SUBPASS_EXTERNAL, v->pre_pass_wait_stage, v->pre_pass_access)
-                .dst(0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT) // read operation occurs at load op, earliest possible stage
-                .flags(0)
-                .end();
-        }
-        if (v->post_pass_wait_stage != VK_PIPELINE_STAGE_NONE && v->post_pass_access != VK_ACCESS_NONE) {
-            builder.dependencies()
-                .src(0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
-                .dst(VK_SUBPASS_EXTERNAL, v->post_pass_wait_stage, v->post_pass_access)
-                .flags(0)
-                .end();
-        }
-
-        bd->render_pass = builder.build();
     }
 
     // vertex and index buffers.
@@ -84,25 +54,16 @@ void ImGui_ImplOTCV_CreateOTCVObjects() {
             .build();
     }
 
-    // framebuffers
-    for (otcv::Image* i : v->color_attachments) {
-        otcv::FramebufferBuilder builder;
-        builder
-            .render_pass(bd->render_pass)
-            .size(i->builder._image_info.extent.width, i->builder._image_info.extent.height)
-            .add_attachment(i);
-        bd->frambuffers.push_back(builder.build());
-    }
-
     // graphics pipeline
     {
-        bd->vertex_shader = otcv::load_shader(imgui_vert_spv, sizeof(imgui_vert_spv));
-        bd->fragment_shader = otcv::load_shader(imgui_frag_spv, sizeof(imgui_frag_spv));
+        bd->vertex_shader = otcv::load_shader("imgui_vert_spv", imgui_vert_spv, sizeof(imgui_vert_spv));
+        bd->fragment_shader = otcv::load_shader("imgui_frag_spv", imgui_frag_spv, sizeof(imgui_frag_spv));
 
         std::vector<VkDynamicState> dyn_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         otcv::GraphicsPipelineBuilder builder;
         builder
-            .render_pass(bd->render_pass, 0)
+            .pipline_rendering().add_color_attachment_format(v->target_format).end()
+            // .render_pass(bd->render_pass, 0)
             .shader_vertex(bd->vertex_shader)
             .shader_fragment(bd->fragment_shader)
             .vertex_state(bd->vertex_buffer->builder)
@@ -158,6 +119,9 @@ void ImGui_ImplOTCV_BuildBuffers() {
     IM_ASSERT(bd);
 
     ImDrawData* draw_data = ImGui::GetDrawData();
+    if (!draw_data) {
+        return;
+    }
     // check if index buffer and vertex buffer need to resize
     int vb_size = draw_data->TotalVtxCount * sizeof(ImDrawVert);
     int ib_size = draw_data->TotalIdxCount * sizeof(ImDrawIdx);
@@ -186,26 +150,32 @@ void ImGui_ImplOTCV_BuildBuffers() {
     bd->index_buffer->flush();
 }
 
-void ImGui_ImplOTCV_Commands(otcv::CommandBuffer* command_buffer, uint32_t image_index, ImGui_ImplOTCV_SynchronizationInfo* info) {
+void ImGui_ImplOTCV_Commands(otcv::CommandBuffer* command_buffer, otcv::Image* target, ImGui_ImplOTCV_SynchronizationInfo* info) {
     ImGui_ImplOTCV_Data* bd = ImGui_ImplOTCV_GetBackendData();
     ImGui_ImplOTCV_InitInfo* v = &bd->OTCVInitInfo;
 
-    if (info->attachments_pre_pass_state != otcv::ResourceState::Null) {
-        command_buffer->cmd_image_memory_barrier(v->color_attachments[image_index],
-            info->attachments_pre_pass_state, otcv::ResourceState::ColorAttachment);
+    if (info->target_pre_render_state != otcv::ResourceState::Null) {
+        command_buffer->cmd_image_memory_barrier(target,
+            info->target_pre_render_state, otcv::ResourceState::ColorAttachment);
+    }
+    
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    if (!draw_data) {
+        goto final_transition;
     }
 
-    ImDrawData* draw_data = ImGui::GetDrawData();
     int fb_width = (int)(draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
     int fb_height = (int)(draw_data->DisplaySize.y * draw_data->FramebufferScale.y);
 
     {
-        otcv::RenderPassBegin begin;
-        begin
-            .framebuffer(bd->frambuffers[image_index])
-            .area(bd->frambuffers[image_index]->builder._info.width,
-                bd->frambuffers[image_index]->builder._info.height); // do not clear
-        command_buffer->cmd_begin_render_pass(bd->render_pass, begin);
+        otcv::RenderingBegin begin;
+        begin.area(target->builder._image_info.extent.width, target->builder._image_info.extent.height)
+            .color_attachment()
+            .load_store(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE)
+            .image_view(target->vk_view)
+            .image_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+            .end();
+        command_buffer->cmd_begin_rendering(begin);
 
         command_buffer->cmd_bind_graphics_pipeline(bd->pipeline);
 
@@ -268,23 +238,24 @@ void ImGui_ImplOTCV_Commands(otcv::CommandBuffer* command_buffer, uint32_t image
             global_vtx_offset += cmd_list->VtxBuffer.Size;
         }
 
-        command_buffer->cmd_end_render_pass(bd->render_pass);
+        command_buffer->cmd_end_rendering();
     }
 
-    if (info->attachments_post_pass_state != otcv::ResourceState::Null) {
-        command_buffer->cmd_image_memory_barrier(v->color_attachments[image_index],
-            otcv::ResourceState::ColorAttachment, info->attachments_post_pass_state);
+final_transition:
+    if (info->target_post_render_state != otcv::ResourceState::Null) {
+        command_buffer->cmd_image_memory_barrier(target,
+            otcv::ResourceState::ColorAttachment, info->target_post_render_state);
     }
 }
 
-void ImGui_ImplOTCV_RenderDrawData(uint32_t attachment_id, ImGui_ImplOTCV_SynchronizationInfo* info) {
+void ImGui_ImplOTCV_RenderDrawData(otcv::Image* target, ImGui_ImplOTCV_SynchronizationInfo* info) {
     IM_ASSERT(info->wait_for_semaphores.size() == info->wait_for_stages.size());
 
     ImGui_ImplOTCV_Data* bd = ImGui_ImplOTCV_GetBackendData();
     ImGui_ImplOTCV_InitInfo* v = &bd->OTCVInitInfo;
 
     bd->descriptor_pool->reset();
-    bd->descriptor_set = bd->descriptor_pool->allocate(&bd->pipeline->desc_set_layouts[0]);
+    bd->descriptor_set = bd->descriptor_pool->allocate(bd->pipeline->desc_set_layouts[0]);
     bd->descriptor_set->bind_image_sampler(0, &bd->font_image, &bd->sampler);
 
     bd->command_buffer->reset();
@@ -292,7 +263,7 @@ void ImGui_ImplOTCV_RenderDrawData(uint32_t attachment_id, ImGui_ImplOTCV_Synchr
     * need it to be synchronized
     */
     ImGui_ImplOTCV_BuildBuffers();
-    bd->command_buffer->record(std::bind(&ImGui_ImplOTCV_Commands, std::placeholders::_1, attachment_id, info));
+    bd->command_buffer->record(std::bind(&ImGui_ImplOTCV_Commands, std::placeholders::_1, target, info));
 
     {
         otcv::QueueSubmit submit;
@@ -318,14 +289,11 @@ void ImGui_ImplOTCV_DestroyDeviceObjects() {
     ImGui_ImplOTCV_InitInfo* v = &bd->OTCVInitInfo;
 
     bd->sampler->destroy();
-    bd->render_pass->destroy();
+    // bd->render_pass->destroy();
     bd->vertex_shader->destroy();
     bd->fragment_shader->destroy();
     bd->vertex_buffer->destroy();   
     bd->index_buffer->destroy();
-    for (otcv::Framebuffer* fb : bd->frambuffers) {
-        fb->destroy();
-    }
     bd->pipeline->destroy();
     bd->font_image->destroy();
     bd->descriptor_pool->destroy();
