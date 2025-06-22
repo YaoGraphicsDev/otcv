@@ -12,13 +12,10 @@ struct ShaderLoadHint {
 	enum class Hint {
 		Default,
 		DynamicUBO,
+		DescriptorIndexing
 	};
-	Hint vertex_hint = Hint::Default;
-	void* vertex_custom = nullptr;
-	Hint fragment_hint = Hint::Default;
-	void* fragment_custom = nullptr;
-	Hint compute_hint = Hint::Default;
-	void* compute_custom = nullptr;
+	Hint type = Hint::Default;
+	void* custom = nullptr;
 };
 void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count, ShaderModuleBuilder& builder, ShaderLoadHint::Hint hint, void* custom);
 
@@ -27,7 +24,7 @@ ShaderModule* load_shader(const std::string& spirv_path, ShaderLoadHint::Hint hi
 ShaderModule* load_shader(const std::string& name, const uint32_t* spirv_bin, uint32_t byte_size, ShaderLoadHint::Hint hint = ShaderLoadHint::Hint::Default, void* custom = nullptr);
 
 typedef std::map<std::string, ShaderModule*> ShaderBlob;
-ShaderBlob load_shaders_from_dir(const std::string& dir, ShaderLoadHint hints = {});
+ShaderBlob load_shaders_from_dir(const std::string& dir, std::map<std::string, ShaderLoadHint> file_hints = {});
 
 void unload_shader_blob(ShaderBlob& blob);
 

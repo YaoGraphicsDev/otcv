@@ -51,9 +51,14 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 	spirv_cross::Compiler compiler(spirv_bin, word_count);
 	spirv_cross::ShaderResources shader_res = compiler.get_shader_resources();
 
-	std::set<uint16_t>* dynamic_sets = nullptr;
+	// reinterpret custom data based on hint
+	std::set<uint16_t>* dynamic_sets = nullptr; // set numbers
+	std::map<uint32_t, uint32_t>* indexing_limits = nullptr; // pack(set, binding) -- limit
 	if (hint == ShaderLoadHint::Hint::DynamicUBO && custom) {
 		dynamic_sets = static_cast<std::set<uint16_t>*>(custom);
+	}
+	else if (hint == ShaderLoadHint::Hint::DescriptorIndexing && custom) {
+		indexing_limits = static_cast<std::map<uint32_t, uint32_t>*>(custom);
 	}
 
 	// ubos
@@ -66,7 +71,9 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 
 		ShaderModuleBuilder::Uniform& ubo_builder = builder.uniform(uint16_t(set), uint16_t(binding));
 		// check hints
-		if (hint == ShaderLoadHint::Hint::DynamicUBO && dynamic_sets->find(set) != dynamic_sets->end()) {
+		if (hint == ShaderLoadHint::Hint::DynamicUBO
+			&& dynamic_sets
+			&& dynamic_sets->find(set) != dynamic_sets->end()) {
 			ubo_builder.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
 		}
 		else {
@@ -79,7 +86,23 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 			ubo_builder.field(member_name, offset);
 		}
 
+		// get array size
+		uint32_t array_size = 1;
+		if (hint == ShaderLoadHint::Hint::DescriptorIndexing
+			&& indexing_limits
+			&& indexing_limits->find(pack(set, binding)) != indexing_limits->end()) {
+			// bindless
+			array_size = (*indexing_limits)[pack(set, binding)];
+		}
+		else {
+			// not bindless. Regular old sampler array
+			if (!type.array.empty()) {
+				array_size = type.array[0]; //type.array is holding the dimensions of an array type. array[0] -- first dimension
+			}
+		}
+
 		ubo_builder
+			.array_count(array_size)
 			.size(size)
 			.name(name)
 			.end();
@@ -93,12 +116,76 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 
 		spirv_cross::SPIRType type = compiler.get_type(textures.type_id);
 		uint32_t array_size = 1;
-		if (!type.array.empty()) {
-			uint32_t array_size = type.array[0];
+		if (hint == ShaderLoadHint::Hint::DescriptorIndexing
+			&& indexing_limits
+			&& indexing_limits->find(pack(set, binding)) != indexing_limits->end()) {
+			// bindless
+			array_size = (*indexing_limits)[pack(set, binding)];
+		} else {
+			// not bindless. Regular old sampler array
+			if (!type.array.empty()) {
+				array_size = type.array[0]; //type.array is holding the dimensions of an array type. array[0] -- first dimension
+			}
 		}
 		builder
 			.uniform(uint16_t(set), uint16_t(binding))
 			.type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+			.array_count(array_size)
+			.name(name)
+			.end();
+	}
+
+	// samplers
+	for (const auto& samplers : shader_res.separate_samplers) {
+		uint32_t set = compiler.get_decoration(samplers.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(samplers.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(samplers.id);
+
+		spirv_cross::SPIRType type = compiler.get_type(samplers.type_id);
+		uint32_t array_size = 1;
+		if (hint == ShaderLoadHint::Hint::DescriptorIndexing
+			&& indexing_limits
+			&& indexing_limits->find(pack(set, binding)) != indexing_limits->end()) {
+			// bindless
+			array_size = (*indexing_limits)[pack(set, binding)];
+		}
+		else {
+			// not bindless. Regular old sampler array
+			if (!type.array.empty()) {
+				array_size = type.array[0]; //type.array is holding the dimensions of an array type. array[0] -- first dimension
+			}
+		}
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_SAMPLER)
+			.array_count(array_size)
+			.name(name)
+			.end();
+	}
+
+	// sampled images
+	for (const auto& images : shader_res.separate_images) {
+		uint32_t set = compiler.get_decoration(images.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(images.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(images.id);
+
+		spirv_cross::SPIRType type = compiler.get_type(images.type_id);
+		uint32_t array_size = 1;
+		if (hint == ShaderLoadHint::Hint::DescriptorIndexing
+			&& indexing_limits
+			&& indexing_limits->find(pack(set, binding)) != indexing_limits->end()) {
+			// bindless
+			array_size = (*indexing_limits)[pack(set, binding)];
+		}
+		else {
+			// not bindless. Regular old sampler array
+			if (!type.array.empty()) {
+				array_size = type.array[0]; //type.array is holding the dimensions of an array type. array[0] -- first dimension
+			}
+		}
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
 			.array_count(array_size)
 			.name(name)
 			.end();
@@ -169,7 +256,7 @@ ShaderModule* load_shader(const std::string& spirv_path, ShaderLoadHint::Hint hi
 	return load_shader(spirv_path, (uint32_t*)code_bytes.data(), code_bytes.size(), hint, custom);
 }
 
-std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& dir, ShaderLoadHint hint) {
+std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& dir, std::map<std::string, ShaderLoadHint> file_hints) {
 	if (!std::filesystem::exists(dir)) {
 		std::cout << "Directory " << dir << " does not exist" << std::endl;
 		exit(1);
@@ -189,14 +276,13 @@ std::map<std::string, ShaderModule*> load_shaders_from_dir(const std::string& di
 				std::cout << "unrecognized file extension of file : " << entry.path().string() << std::endl;
 				continue;
 			}
-			if (extension_type == ".vert") {
-				shader_map[filename] = load_shader(entry.path().string(), hint.vertex_hint, hint.vertex_custom);
-			}
-			if (extension_type == ".frag") {
-				shader_map[filename] = load_shader(entry.path().string(), hint.fragment_hint, hint.fragment_custom);
-			}
-			if (extension_type == ".comp") {
-				shader_map[filename] = load_shader(entry.path().string(), hint.compute_hint, hint.compute_custom);
+			
+			auto iter = file_hints.find(filename);
+			if (iter != file_hints.end()) {
+				ShaderLoadHint hint = iter->second;
+				shader_map[filename] = load_shader(entry.path().string(), hint.type, hint.custom);
+			} else {
+				shader_map[filename] = load_shader(entry.path().string());
 			}
 		}
 	}
@@ -516,6 +602,14 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
 		src_stage_mask = VK_PIPELINE_STAGE_HOST_BIT;
 	}
+	else if (from_state == ResourceState::IndirectRead) {
+		barrier.srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+		src_stage_mask = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+	}
+	else if (from_state == ResourceState::TransferDst) {
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		src_stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}
 	else {
 		std::cout << "cannot find suitable start state for pipeline barrier, from_state = " << (uint32_t)from_state << std::endl;
 		assert(false);
@@ -530,9 +624,21 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		dst_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	}
+	else if (to_state == ResourceState::ComputeSSBORead) {
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		dst_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	}
 	else if (to_state == ResourceState::TransferDst) {
 		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		dst_stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}
+	else if (to_state == ResourceState::IndirectRead) {
+		barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+		dst_stage_mask = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+	}
+	else if (to_state == ResourceState::IndexRead) {
+		barrier.dstAccessMask = VK_ACCESS_INDEX_READ_BIT;
+		dst_stage_mask = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
 	}
 	else {
 		std::cout << "cannot find suitable end state for pipeline barrier, to_state = " << (uint32_t)to_state << std::endl;

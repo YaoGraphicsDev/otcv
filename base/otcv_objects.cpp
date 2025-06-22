@@ -201,6 +201,55 @@ void DescriptorSet::bind_storage_image(uint32_t binding, Image** p_images, uint3
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
+
+void DescriptorSet::bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_t array_start, uint32_t array_count) {
+	std::vector<VkDescriptorImageInfo> image_infos(array_count);
+	for (uint32_t i = 0; i < array_count; ++i) {
+		VkDescriptorImageInfo image_info{};
+		image_info.sampler = (*(p_samplers + i))->vk_sampler;
+		image_info.imageView = VK_NULL_HANDLE;
+		image_info.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		image_infos[i] = image_info;
+	}
+
+	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER);
+
+	VkWriteDescriptorSet write{};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.dstSet = vk_desc_set;
+	write.dstBinding = binding;
+	write.dstArrayElement = array_start;
+	write.descriptorCount = array_count;
+	write.descriptorType = bindings[binding].descriptorType;
+	write.pImageInfo = image_infos.data();
+
+	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
+}
+
+void DescriptorSet::bind_sampled_image(uint32_t binding, Image** p_images, uint32_t array_start, uint32_t array_count) {
+	std::vector<VkDescriptorImageInfo> image_infos(array_count);
+	for (uint32_t i = 0; i < array_count; ++i) {
+		VkDescriptorImageInfo image_info{};
+		image_info.sampler = VK_NULL_HANDLE;
+		image_info.imageView = (*(p_images + i))->vk_view;
+		image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		image_infos[i] = image_info;
+	}
+
+	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+
+	VkWriteDescriptorSet write{};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.dstSet = vk_desc_set;
+	write.dstBinding = binding;
+	write.dstArrayElement = array_start;
+	write.descriptorCount = array_count;
+	write.descriptorType = bindings[binding].descriptorType;
+	write.pImageInfo = image_infos.data();
+
+	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
+}
+
 void DescriptorSet::bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize range) {
 	VkDescriptorBufferInfo buffer_info{};
 	buffer_info.buffer = buffer->vk_buffer;
@@ -219,6 +268,28 @@ void DescriptorSet::bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize o
 	write.descriptorCount = 1;
 	write.descriptorType = bindings[binding].descriptorType;
 	write.pBufferInfo = &buffer_info;
+
+	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
+}
+
+void DescriptorSet::bind_buffer_array(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize stride, uint32_t count) {
+	std::vector<VkDescriptorBufferInfo> buffer_infos(count);
+	for (uint32_t i = 0; i < count; ++i) {
+		buffer_infos[i].buffer = buffer->vk_buffer;
+		buffer_infos[i].offset = offset + stride * i;
+		buffer_infos[i].range = stride;
+	}
+
+	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+
+	VkWriteDescriptorSet write{};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.dstSet = vk_desc_set;
+	write.dstBinding = binding;
+	write.dstArrayElement = 0;
+	write.descriptorCount = count;
+	write.descriptorType = bindings[binding].descriptorType;
+	write.pBufferInfo = buffer_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
@@ -587,12 +658,32 @@ void CommandBuffer::cmd_bind_descriptor_set(GraphicsPipeline* pipeline, Descript
 		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
 		dynamic_offsets.size(), dynamic_offsets.data());
 }
+void CommandBuffer::cmd_bind_descriptor_set(ComputePipeline* pipeline, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
+	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
+		dynamic_offsets.size(), dynamic_offsets.data());
+}
 void CommandBuffer::cmd_draw_indexed(uint32_t index_count,
 	uint32_t first_index,
 	int32_t vertex_offset,
 	uint32_t instance_count,
 	uint32_t first_instance) {
 	vkCmdDrawIndexed(this->vk_command_buffer, index_count, instance_count, first_index, vertex_offset, first_instance);
+}
+void CommandBuffer::cmd_draw_indexed_indirect_count(
+	Buffer* commands,
+	VkDeviceSize command_offset,
+	Buffer* counts,
+	VkDeviceSize count_offset,
+	uint32_t max_draw,
+	uint32_t commands_stride) {
+	vkCmdDrawIndexedIndirectCount(vk_command_buffer,
+		commands->vk_buffer,
+		command_offset,
+		counts->vk_buffer,
+		count_offset,
+		max_draw,
+		commands_stride);
 }
 void CommandBuffer::cmd_dispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
 	vkCmdDispatch(vk_command_buffer,
@@ -619,6 +710,10 @@ void CommandBuffer::cmd_image_blit(Image* src, Image* dst, ImageBlit& region, Vk
 		src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		1, &region._image_blit, filter);
+}
+void CommandBuffer::cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset, VkDeviceSize size) {
+	vkCmdFillBuffer(vk_command_buffer, dst_buffer->vk_buffer, dst_offset,
+		(size == VK_WHOLE_SIZE ? dst_buffer->builder._info.size : size), data);
 }
 
 
@@ -695,17 +790,26 @@ void ShaderModule::destroy() {
 }
 
 // vertex buffer
-VertexBuffer::VertexBuffer(VertexBufferBuilder& b) {
+VertexBuffer::VertexBuffer(VertexBufferBuilder& b, BufferDataUpload upload_option) {
 	assert(b._data_handles.size() == b._buffer_builders.size());
 
 	for (size_t i = 0; i < b._data_handles.size(); ++i) {
 		auto& bb = b._buffer_builders[i];
 		Buffer* buffer = new Buffer(bb);
 		void* data = b._data_handles[i];
-		if (data) {
+		this->buffers.push_back(buffer);
+		if (!data) {
+			continue;
+		}
+		if (upload_option == BufferDataUpload::Sync) {
 			buffer->populate(data);
 		}
-		this->buffers.push_back(buffer);
+		else if(upload_option == BufferDataUpload::AsyncCPUWait) {
+			buffer->populate_async(data);
+		}
+		else if (upload_option == BufferDataUpload::AsyncGPUBarrier) {
+			buffer->populate_async(data, Buffer::SyncType::GPUBarrier, ResourceState::VertexRead, ResourceState::Created);
+		}
 	}
 	b._buffer_builders.clear();
 	b._data_handles.clear();
@@ -732,6 +836,12 @@ void VertexBuffer::resize(uint32_t binding, size_t size) {
 	delete tgt_buffer;
 	b_builder.size(size);
 	tgt_buffer = new Buffer(b_builder);
+}
+
+void VertexBuffer::wait_for_async_upload() {
+	for (Buffer* buf : buffers) {
+		buf->wait_for_async();
+	}
 }
 
 // image
@@ -799,7 +909,7 @@ void Image::destroy() {
 	g_user_images.erase(ptr);
 }
 void Image::populate_async(void* data, size_t byte_size, 
-	ResourceState target_state, ResourceState current_state) {
+	ResourceState target_state, ResourceState current_state, SyncType sync_type) {
 	assert(builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 
 	if (byte_size == 0 || !data) {
@@ -866,49 +976,67 @@ void Image::populate_async(void* data, size_t byte_size,
 
 	cmd_buf->end();
 
-	otcv::Fence* fence = otcv::Fence::create(false);
-	{
+	if (sync_type == SyncType::CPUWait) {
+		otcv::Fence* fence = otcv::Fence::create(false);
 		otcv::QueueSubmit submit;
 		submit
 			.batch()
 			.add_command_buffer(cmd_buf)
 			.end().signal(fence);
 		g_queue.submit(submit);
+
+		async_ctx.reset(new AsyncPopulateCtx);
+		async_ctx->command_buffer = cmd_buf;
+		async_ctx->fence = fence;
+		async_ctx->staging = staging;
 	}
-	// g_queue.idle_wait();
-	// g_command_pool->free(cmd_buffer);
-
-	async_ctx.reset(new AsyncPopulateCtx);
-	async_ctx->command_buffer = cmd_buf;
-	async_ctx->fence = fence;
-	async_ctx->staging = staging;
-
-	// staging_queued_copy(data, byte_size, this, current_state, target_state);
+	else if (sync_type == SyncType::GPUBarrier) {
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end();
+		g_queue.submit(submit);
+	}
+	else {
+		assert(false);
+	}
 }
 
-void Image::initialize_state_async(ResourceState target_state, ResourceState current_state) {
+void Image::initialize_state_async(ResourceState target_state, ResourceState current_state, SyncType sync_type) {
 	// unfinished async task, wait till the last task finishes
 	wait_for_async();
-
+	
 	otcv::CommandBuffer* cmd_buf = g_command_pool->allocate();
 	cmd_buf->begin(true);
 	cmd_buf->cmd_image_memory_barrier(this, current_state, target_state);
 	cmd_buf->end();
 
-	otcv::Fence* fence = otcv::Fence::create(false);
-	{
+	if (sync_type == SyncType::CPUWait) {
+		otcv::Fence* fence = otcv::Fence::create(false);
 		otcv::QueueSubmit submit;
 		submit
 			.batch()
 			.add_command_buffer(cmd_buf)
 			.end().signal(fence);
 		g_queue.submit(submit);
-	}
 
-	async_ctx.reset(new AsyncPopulateCtx);
-	async_ctx->command_buffer = cmd_buf;
-	async_ctx->fence = fence;
-	async_ctx->staging = nullptr;
+		async_ctx.reset(new AsyncPopulateCtx);
+		async_ctx->command_buffer = cmd_buf;
+		async_ctx->fence = fence;
+		async_ctx->staging = nullptr;
+	}
+	else if (sync_type == SyncType::GPUBarrier) {
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end();
+		g_queue.submit(submit);
+	}
+	else {
+		assert(false);
+	}
 }
 
 void Image::wait_for_async() {
@@ -931,12 +1059,12 @@ void Image::wait_for_async() {
 }
 void Image::populate(void* data, size_t byte_size,
 	ResourceState target_state, ResourceState current_state) {
-	populate_async(data, byte_size, target_state, current_state);
+	populate_async(data, byte_size, target_state, current_state, SyncType::CPUWait);
 	wait_for_async();
 }
 
 void Image::initialize_state(ResourceState target_state, ResourceState current_state) {
-	initialize_state_async(target_state, current_state);
+	initialize_state_async(target_state, current_state, SyncType::CPUWait);
 	wait_for_async();
 }
 
@@ -994,6 +1122,7 @@ Buffer::Buffer(BufferBuilder& builder) {
 	}
 
 	this->builder = std::move(builder);
+	async_ctx = nullptr;
 }
 
 Buffer::~Buffer() {
@@ -1008,6 +1137,92 @@ void Buffer::destroy() {
 	std::shared_ptr<Buffer> ptr(std::shared_ptr<Buffer>(), this);
 	g_user_buffers.erase(ptr);
 }
+
+void Buffer::populate_async(void* data, SyncType sync_type, ResourceState target_state, ResourceState current_state) {
+	// if fails, call the sync version
+	assert(!(builder._mem_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+	// should not set any resource state if CPU wait type is set
+	if (sync_type == SyncType::CPUWait) {
+		assert(target_state == ResourceState::Null);
+		assert(current_state == ResourceState::Null);
+	}
+	else if (sync_type == SyncType::GPUBarrier) {
+		assert(target_state != ResourceState::Null);
+		assert(current_state != ResourceState::Null);
+	}
+	else {
+		assert(false);
+	}
+	
+	if (!data) {
+		return;
+	}
+	VkDeviceSize size = builder._info.size;
+	otcv::BufferBuilder b_builder;
+	otcv::Buffer* staging = b_builder.size(size).usage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT).host_access(otcv::BufferBuilder::Access::Coherent).build();
+	memcpy(staging->mapped, data, size);
+
+	// unfinished async task, wait till the last task finishes
+	wait_for_async();
+
+	otcv::CommandBuffer* cmd_buf = g_command_pool->allocate();
+	cmd_buf->begin(true);
+	if (sync_type == SyncType::GPUBarrier) {
+		cmd_buf->cmd_buffer_memory_barrier(this, current_state, ResourceState::TransferDst);
+		cmd_buf->cmd_copy_buffer(staging, this);
+		cmd_buf->cmd_buffer_memory_barrier(this, ResourceState::TransferDst, target_state);
+	}
+	else {
+		cmd_buf->cmd_copy_buffer(staging, this);
+	}
+	cmd_buf->end();
+
+	if (sync_type == SyncType::CPUWait) {
+		otcv::Fence* fence = otcv::Fence::create(false);
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end().signal(fence);
+		g_queue.submit(submit);
+
+		async_ctx.reset(new AsyncPopulateCtx);
+		async_ctx->fence = fence;
+		async_ctx->command_buffer = cmd_buf;
+		async_ctx->staging = staging;
+	}
+	else if (sync_type == SyncType::GPUBarrier) {
+		otcv::QueueSubmit submit;
+		submit
+			.batch()
+			.add_command_buffer(cmd_buf)
+			.end();
+		g_queue.submit(submit);
+	}
+	else {
+		assert(false);
+	}
+}
+
+void Buffer::wait_for_async() {
+	if (!async_ctx) {
+		// nothing to wait
+		return;
+	}
+	if (async_ctx->fence) {
+		async_ctx->fence->wait_reset();
+		async_ctx->fence->destroy();
+	}
+	if (async_ctx->command_buffer) {
+		g_command_pool->free(async_ctx->command_buffer);
+	}
+	if (async_ctx->staging) {
+		async_ctx->staging->destroy();
+	}
+
+	async_ctx = nullptr;
+}
+
 void Buffer::populate(void* data) {
 	if (!data) {
 		return;
@@ -1016,7 +1231,9 @@ void Buffer::populate(void* data) {
 		copy_host_mapped(data, 0, builder._info.size)->flush();
 	}
 	else {
-		staging_queued_copy(data, this);
+		// staging_queued_copy(data, this);
+		populate_async(data);
+		wait_for_async();
 	}
 }
 Buffer* Buffer::copy_host_mapped(const void* data, uint32_t offset, uint32_t size) {

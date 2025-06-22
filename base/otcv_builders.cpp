@@ -225,7 +225,7 @@ Buffer* BufferBuilder::build() {
 }
 
 // vertex buffer builder
-VertexBufferBuilder& VertexBufferBuilder::add_binding(BufferBuilder& b_builder, void* data) {
+VertexBufferBuilder& VertexBufferBuilder::add_binding(BufferBuilder b_builder, void* data) {
 	_binding_descs.emplace_back();
 	_binding_descs.back().binding = _binding_descs.size() - 1;
 	_binding_descs.back().stride = 0;
@@ -873,6 +873,10 @@ DescriptorPoolBuilder& DescriptorPoolBuilder::descriptor_set_freeable(bool freea
 	else {
 		_info.flags &= ~VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 	}
+	return *this;
+}
+DescriptorPoolBuilder& DescriptorPoolBuilder::bindless() {
+	// _info.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; // for my use case this is not necessary
 	return *this;
 }
 DescriptorPool* DescriptorPoolBuilder::build() {

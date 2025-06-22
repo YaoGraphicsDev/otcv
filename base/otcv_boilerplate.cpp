@@ -176,9 +176,29 @@ void create_device() {
     device_feature.samplerAnisotropy = VK_TRUE;
     device_feature.fillModeNonSolid = VK_TRUE;
 
+    VkPhysicalDeviceVulkan11Features v11_feature{};
+    v11_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    v11_feature.shaderDrawParameters = true;
+
+    // for descriptor indexing (bindless),
+    // flags listed in the first column need to be enabled when creating descriptor sets and pools.
+    // To be able to use these flags, the features listed in the second column have to be enabled.
+    // VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT                    descriptorBindingPartiallyBound
+    // VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT          descriptorBindingVariableDescriptorCount
+    // VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT                  descriptorBindingUniformBufferUpdateAfterBind(for ubo), descriptorBindingSampledImageUpdateAfterBind(for image sampler) 
     VkPhysicalDeviceVulkan12Features v12_feature{};
     v12_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    v12_feature.pNext = &v11_feature;
+    v12_feature.drawIndirectCount = VK_TRUE;
     v12_feature.scalarBlockLayout = VK_TRUE;
+    v12_feature.descriptorIndexing = VK_TRUE;
+    v12_feature.runtimeDescriptorArray = VK_TRUE;
+    v12_feature.descriptorBindingPartiallyBound = VK_TRUE;
+    v12_feature.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    v12_feature.descriptorBindingUniformBufferUpdateAfterBind = VK_TRUE;
+    v12_feature.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    v12_feature.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
+    v12_feature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features v13_feature{};
     v13_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -190,7 +210,10 @@ void create_device() {
     device_feature_2.pNext = &v13_feature;
 	device_feature_2.features = device_feature;
 
-    std::vector<const char*> non_core_device_extension_names = { "VK_KHR_swapchain"};
+    std::vector<const char*> non_core_device_extension_names = { 
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME
+    };
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -202,7 +225,6 @@ void create_device() {
     device_info.enabledExtensionCount = non_core_device_extension_names.size();
     device_info.ppEnabledExtensionNames = non_core_device_extension_names.data(); // assume physical device supports this
     // device_info.pEnabledFeatures = &feat_info
-
 
     g_device.reset(new Device(device_info));
 }
@@ -322,6 +344,19 @@ Context create_context(void* window_data) {
     ctx.command_pool = g_command_pool.get();
     ctx.swapchain = g_swapchain.get();
 
+    return ctx;
+}
+
+Context get_context() {
+    Context ctx;
+    ctx.instance = g_instance.get();
+    ctx.surface = g_surface.get();
+    ctx.physical_device = &g_physical_device;
+    ctx.device = g_device.get();
+    ctx.queue = &g_queue;
+    ctx.command_pool = g_command_pool.get();
+    ctx.swapchain = g_swapchain.get();
+    
     return ctx;
 }
 

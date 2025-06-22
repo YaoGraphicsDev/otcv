@@ -80,6 +80,8 @@ enum class ResourceState {
 	ComputeSSBOWrite,
 	ComputeSSBO, // Read & Write
 
+	IndirectRead,
+
 	FragSample,
 	ComputeSample,
 
@@ -150,11 +152,18 @@ struct CommandBuffer {
 
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
 	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+	void cmd_bind_descriptor_set(ComputePipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
 	void cmd_draw_indexed(uint32_t index_count,
 		uint32_t first_index = 0,
 		int32_t vertex_offset = 0,
 		uint32_t instance_count = 1,
 		uint32_t first_instance = 0);
+	void cmd_draw_indexed_indirect_count(Buffer* commands,
+		VkDeviceSize commands_offset,
+		Buffer* counts,
+		VkDeviceSize counts_offset,
+		uint32_t max_draw,
+		uint32_t commands_stride);
 
 	// compute pipeline commands
 	void cmd_bind_compute_pipeline(ComputePipeline* pipeline);
@@ -171,6 +180,8 @@ struct CommandBuffer {
 
 	// blit
 	void cmd_image_blit(Image* src, Image* dst, ImageBlit& region, VkFilter filter = VK_FILTER_NEAREST);
+	
+	void cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
 
 	VkCommandBuffer vk_command_buffer = VK_NULL_HANDLE;
 	VkCommandBufferAllocateInfo alloc_info = {};
@@ -281,8 +292,10 @@ struct DescriptorSet {
 	
 	void bind_image_sampler(uint32_t binding, Image** p_images, Sampler** p_samplers, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_storage_image(uint32_t binding, Image** p_images, uint32_t array_start = 0, uint32_t array_count = 1);
-	// The idea is to not use array of buffers, whether it be UBO or SSBO
+	void bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_t array_start = 0, uint32_t array_count = 1);
+	void bind_sampled_image(uint32_t binding, Image** p_images, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE);
+	void bind_buffer_array(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize stride, uint32_t count);
 
 	VkDescriptorSet vk_desc_set = VK_NULL_HANDLE;
 	VkDescriptorSetAllocateInfo alloc_info = {};
@@ -296,6 +309,7 @@ struct DescriptorPoolBuilder {
 	DescriptorPoolBuilder& descriptor_type_capacity(VkDescriptorType type, uint32_t count);
 	DescriptorPoolBuilder& descriptor_set_capacity(uint32_t count);
 	DescriptorPoolBuilder& descriptor_set_freeable(bool freeable = true);
+	DescriptorPoolBuilder& bindless();
 	DescriptorPool* build();
 
 	std::vector<VkDescriptorPoolSize> _pool_sizes;
@@ -348,10 +362,16 @@ struct Image {
 	~Image();
 	void destroy();
 
+	enum class SyncType {
+		CPUWait,
+		GPUBarrier
+	};
+	// images that does not require explicit cpu wait are expected to go into render/compute pipelines later,
+	// synchronized on the GPU side with image memory barrier
 	void populate_async(void* data, size_t byte_size, 
-		ResourceState target_state, ResourceState current_state = ResourceState::Created);
+		ResourceState target_state, ResourceState current_state = ResourceState::Created, SyncType sync_type = SyncType::CPUWait);
 
-	void initialize_state_async(ResourceState target_state, ResourceState current_state = ResourceState::Created);
+	void initialize_state_async(ResourceState target_state, ResourceState current_state = ResourceState::Created, SyncType sync_type = SyncType::CPUWait);
 
 	void wait_for_async();
 
@@ -426,21 +446,38 @@ struct Buffer {
 	~Buffer();
 	void destroy();
 
+	enum class SyncType {
+		CPUWait,
+		GPUBarrier
+	};
+	void populate_async(void* data, SyncType sync_type = SyncType::CPUWait, ResourceState target_state = ResourceState::Null, ResourceState current_state = ResourceState::Null);
+
+	void wait_for_async();
+
+	// sync version
 	void populate(void* data);
 
 	Buffer* copy_host_mapped(const void* data, uint32_t offset, uint32_t size);
+
 	void flush();
 
 	BufferBuilder builder;
 	VkBuffer vk_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory vk_memory = VK_NULL_HANDLE;
 	void* mapped = nullptr;
+
+	struct AsyncPopulateCtx {
+		otcv::Fence* fence;
+		otcv::CommandBuffer* command_buffer;
+		otcv::Buffer* staging;
+	};
+	std::shared_ptr<AsyncPopulateCtx> async_ctx = nullptr;
 };
 
 // Vertex Buffer
 struct VertexBuffer;
 struct VertexBufferBuilder {
-	VertexBufferBuilder& add_binding(BufferBuilder& b_builder, void* data = nullptr);
+	VertexBufferBuilder& add_binding(BufferBuilder b_builder, void* data = nullptr);
 	VertexBufferBuilder& add_binding(); // for consturcting binding description only. Do not build after call
 	VertexBufferBuilder& add_attribute(uint32_t binding, VkFormat format, uint32_t byte_size);
 	VertexBufferBuilder& add_attribute_padding(uint32_t binding, uint32_t byte_size);
@@ -453,11 +490,20 @@ struct VertexBufferBuilder {
 	bool _buildable = true;
 };
 struct VertexBuffer {
-	VertexBuffer(VertexBufferBuilder& builder);
+	enum class BufferDataUpload {
+		Dont,
+		Sync,
+		AsyncCPUWait,
+		AsyncGPUBarrier
+	};
+
+	VertexBuffer(VertexBufferBuilder& builder, BufferDataUpload upload_option = BufferDataUpload::Sync);
 	~VertexBuffer();
 	void destroy();
 
 	void resize(uint32_t binding, size_t size);
+
+	void wait_for_async_upload();
 
 	VertexBufferBuilder builder;
 	std::vector<Buffer*> buffers;
@@ -748,6 +794,8 @@ struct RawPtrLess {
 };
 
 Context create_context(void* window_data);
+
+Context get_context();
 
 void destroy_context();
 }
