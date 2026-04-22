@@ -1,0 +1,56 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout (push_constant) uniform PushConstants {
+    float t;        // time
+} consts;
+
+// set 0 & 1 for use outside of framegraph
+
+// set 2
+//  binding 0 - 15:     textures
+//  binding 16 - 23:    SSBO
+//  binding 24 - 31:    storage image
+layout(rgba8, set = 2, binding = 24) uniform writeonly image2D resultImg;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(resultImg);
+
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    vec2 uv = vec2(coord) / vec2(size.xy);
+    vec2 p = uv * 2.0 - 1.0;
+    p.x *= float(size.x) / float(size.y);
+
+    vec2 q = p;
+    float t = consts.t;
+    q.x += 0.18 * sin(q.y * 8.0  + t * 1.4);
+    q.y += 0.18 * sin(q.x * 9.0  - t * 1.2);
+    q.x += 0.08 * sin(q.y * 18.0 - t * 0.7);
+    q.y += 0.08 * sin(q.x * 17.0 + t * 0.9);
+
+    float v = 0.0;
+    v += sin(q.x * 14.0 + t);
+    v += sin(q.y * 15.0 - t * 1.2);
+    v += sin((q.x + q.y) * 12.0 + t * 0.7);
+    v += sin((q.x - q.y) * 13.0 - t * 0.9);
+    v += sin(length(q) * 18.0 - t * 1.5);
+    v *= 0.2;
+
+    float veins = smoothstep(0.15, 0.55, v);
+
+    vec3 base   = vec3(0.25, 0.25, 0.25);
+    vec3 mid    = vec3(0.75, 0.18, 0.04);
+    vec3 bright = vec3(1.00, 0.78, 0.25);
+
+    vec3 color = mix(base, mid, veins);
+    color = mix(color, bright, smoothstep(0.7, 1.0, veins));
+
+    float glow = exp(-10.0 * abs(v - 0.4));
+    color += bright * glow * 0.25;
+
+    imageStore(resultImg, coord, vec4(color, 1.0f));
+}

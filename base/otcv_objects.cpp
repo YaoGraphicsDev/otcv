@@ -141,6 +141,24 @@ void Fence::wait_reset() {
 	vkResetFences(g_device->vk_device, 1, &vk_fence);
 }
 
+void Fence::wait() {
+	vkWaitForFences(g_device->vk_device, 1, &vk_fence, VK_TRUE, UINT64_MAX);
+}
+
+void Fence::reset() {
+	vkResetFences(g_device->vk_device, 1, &vk_fence);
+}
+
+bool Fence::is_signaled() {
+	VkResult result = vkGetFenceStatus(g_device->vk_device, vk_fence);
+	// 3 possible outcomes: VK_SUCCESS, VK_NOT_READY, VK_ERROR_DEVICE_LOST
+	if (result != VK_SUCCESS && result != VK_NOT_READY) {
+		std::cout << "Unexpected fence status, error code = " << result << std::endl;
+		exit(1);
+	}
+	return result == VK_SUCCESS;
+}
+
 // Descriptor pool
 DescriptorSet::DescriptorSet(VkDescriptorSet vk_desc_set, VkDescriptorSetAllocateInfo alloc_info,
 	const std::vector<VkDescriptorSetLayoutBinding>& bindings, 
@@ -294,6 +312,142 @@ void DescriptorSet::bind_buffer_array(uint32_t binding, Buffer* buffer, VkDevice
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 
+/*
+* bind something like this with one update call
+* set = 1, binding = 0, buffer {}
+*		....
+* set = 1, bindind = 4, buffer {}
+*/
+void DescriptorSet::bind_consecutive_buffers(uint32_t binding_start, uint32_t binding_count, Buffer** p_buffers) {
+	std::vector<VkWriteDescriptorSet> writes(binding_count);
+	std::vector<VkDescriptorBufferInfo> infos(binding_count);
+
+	// find the starting binding
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding_start; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate start binding = " << binding_start << " for buffer" << std::endl;
+		assert(false);
+		return;
+	}
+
+	for (uint32_t i = 0; i < binding_count; ++i, ++iter) {
+		// check if consecutive bindings exist
+		if (iter->binding != i + binding_start) {
+			std::cout << "incontinuous binding at " << i + binding_start << " for buffer" << std::endl;
+			assert(false);
+			return;
+		}
+
+		VkDescriptorBufferInfo& info = infos[i];
+		info.buffer = (*(p_buffers + i))->vk_buffer;
+		info.offset = 0;
+		info.range = VK_WHOLE_SIZE;
+		
+		assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+			iter->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+		VkWriteDescriptorSet& write = writes[i];
+		write = {};
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = vk_desc_set;
+		write.dstBinding = i + binding_start;
+		write.dstArrayElement = 0;
+		write.descriptorCount = 1;
+		write.descriptorType = iter->descriptorType;
+		write.pBufferInfo = &info;
+	}
+
+	vkUpdateDescriptorSets(g_device->vk_device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void DescriptorSet::bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images) {
+	std::vector<VkWriteDescriptorSet> writes(binding_count);
+	std::vector<VkDescriptorImageInfo> infos(binding_count);
+
+	// find the starting binding
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding_start; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate start binding = " << binding_start << " for sampled images" << std::endl;
+		assert(false);
+		return;
+	}
+
+	for (uint32_t i = 0; i < binding_count; ++i, ++iter) {
+		// check if consecutive bindings exist
+		if (iter->binding != i + binding_start) {
+			std::cout << "incontinuous binding at " << i + binding_start << " for smapled images" << std::endl;
+			assert(false);
+			return;
+		}
+
+		VkDescriptorImageInfo& info = infos[i];
+		info.sampler = VK_NULL_HANDLE;
+		info.imageView = (*(p_images + i))->vk_view;
+		info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+
+		VkWriteDescriptorSet& write = writes[i];
+		write = {};
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = vk_desc_set;
+		write.dstBinding = i + binding_start;
+		write.dstArrayElement = 0;
+		write.descriptorCount = 1;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		write.pImageInfo = &info;
+	}
+
+	vkUpdateDescriptorSets(g_device->vk_device, writes.size(), writes.data(), 0, nullptr);
+}
+
+/*
+* bind something like this with one update call
+* set = 1, binding = 0, texture2D
+*		....
+* set = 1, bindind = 4, texture2D
+*/
+void DescriptorSet::bind_consecutive_storage_images(uint32_t binding_start, uint32_t binding_count, Image** p_images) {
+	std::vector<VkWriteDescriptorSet> writes(binding_count);
+	std::vector<VkDescriptorImageInfo> infos(binding_count);
+
+	// find the starting binding
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding_start; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate start binding = " << binding_start << " for storage images" << std::endl;
+		assert(false);
+		return;
+	}
+
+	for (uint32_t i = 0; i < binding_count; ++i, ++iter) {
+		// check if consecutive bindings exist
+		if (iter->binding != i + binding_start) {
+			std::cout << "incontinuous binding at " << i + binding_start << " for storage images" << std::endl;
+			assert(false);
+			return;
+		}
+
+		VkDescriptorImageInfo& info = infos[i];
+		info.sampler = VK_NULL_HANDLE;
+		info.imageView = (*(p_images + i))->vk_view;
+		info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+		assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+
+		VkWriteDescriptorSet& write = writes[i];
+		write = {};
+		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		write.dstSet = vk_desc_set;
+		write.dstBinding = i + binding_start;
+		write.dstArrayElement = 0;
+		write.descriptorCount = 1;
+		write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		write.pImageInfo = &info;
+	}
+
+	vkUpdateDescriptorSets(g_device->vk_device, writes.size(), writes.data(), 0, nullptr);
+}
+
 DescriptorPool::DescriptorPool(DescriptorPoolBuilder& builder) {
 	builder._info.poolSizeCount = builder._pool_sizes.size();
 	builder._info.pPoolSizes = builder._pool_sizes.data();
@@ -444,27 +598,12 @@ Image* Swapchain::mock_image(uint32_t id) {
 }
 
 // Command pool
-CommandPool::CommandPool(VkCommandPoolCreateInfo& info) {
-	this->info = info;
-	VkResult result = vkCreateCommandPool(g_device->vk_device, &info, nullptr, &vk_command_pool);
-	if (result != VK_SUCCESS) {
-		std::cout << "Cannot create command pool, error code = " << result << std::endl;
-		exit(1);
-	}
-}
-CommandPool::~CommandPool() {
-	for (auto& b : command_buffers) {
-		delete b;
-	}
-	command_buffers.clear();
-	vkDestroyCommandPool(g_device->vk_device, vk_command_pool, nullptr);
-}
-CommandPool* CommandPool::create(bool transient, bool allow_reset, bool user) {
+CommandPool::CommandPool(bool transient, bool allow_individual_reset) {
 	VkCommandPoolCreateFlags flags = 0;
 	if (transient) {
 		flags |= VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
 	}
-	if (allow_reset) {
+	if (allow_individual_reset) {
 		flags |= VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 	}
 
@@ -472,7 +611,18 @@ CommandPool* CommandPool::create(bool transient, bool allow_reset, bool user) {
 	create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	create_info.flags = flags;
 	create_info.queueFamilyIndex = g_physical_device.queue_family_index;
-	CommandPool* command_pool = new CommandPool(create_info);
+	this->info = create_info;
+	VkResult result = vkCreateCommandPool(g_device->vk_device, &info, nullptr, &vk_command_pool);
+	if (result != VK_SUCCESS) {
+		std::cout << "Cannot create command pool, error code = " << result << std::endl;
+		exit(1);
+	}
+}
+CommandPool::~CommandPool() {
+	vkDestroyCommandPool(g_device->vk_device, vk_command_pool, nullptr);
+}
+CommandPool* CommandPool::create(bool transient, bool allow_individual_reset, bool user) {
+	CommandPool* command_pool = new CommandPool(transient, allow_individual_reset);
 	if (user) {
 		g_user_command_pools.insert(std::shared_ptr<CommandPool>(command_pool));
 	}
@@ -493,16 +643,14 @@ CommandBuffer* CommandPool::allocate() {
 	alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	alloc_info.commandBufferCount = 1;
 
-	CommandBuffer* buffer = new CommandBuffer(alloc_info);
-	command_buffers.insert(buffer);
-	return buffer;
+	return new CommandBuffer(alloc_info);
+}
+void CommandPool::reset(bool release) {
+	vkResetCommandPool(g_device->vk_device, vk_command_pool, release ? VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT : 0);
 }
 void CommandPool::free(CommandBuffer* buffer) {
-	auto iter = command_buffers.find(buffer);
-	if (iter != command_buffers.end()) {
-		delete (*iter);
-		command_buffers.erase(iter);
-	}
+	delete buffer;
+	buffer = nullptr;
 }
 
 // command buffer
@@ -536,8 +684,8 @@ void CommandBuffer::end() {
 	vkEndCommandBuffer(vk_command_buffer);
 	begin_info = {};
 }
-void CommandBuffer::reset() {
-	vkResetCommandBuffer(vk_command_buffer, 0);
+void CommandBuffer::reset(bool release) {
+	vkResetCommandBuffer(vk_command_buffer, release ? VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT : 0);
 }
 void CommandBuffer::record(std::function<void(CommandBuffer*)> func, bool one_time) {
 	this->begin(one_time);
@@ -604,6 +752,9 @@ void CommandBuffer::cmd_bind_vertex_buffer(VertexBuffer* vb, std::vector<VkDevic
 	}
 	vkCmdBindVertexBuffers(this->vk_command_buffer, 0, binding_count, vk_buffers.data(), offsets.data());
 }
+void CommandBuffer::cmd_bind_raw_buffer_as_vertex(Buffer* buf, uint32_t binding, std::vector<VkDeviceSize> offset) {
+	vkCmdBindVertexBuffers(this->vk_command_buffer, binding, 1, &buf->vk_buffer, offset.data());
+}
 void CommandBuffer::cmd_bind_index_buffer(Buffer* ib, VkIndexType type, VkDeviceSize offset) {
 	vkCmdBindIndexBuffer(this->vk_command_buffer, ib->vk_buffer, offset, type);
 }
@@ -663,6 +814,12 @@ void CommandBuffer::cmd_bind_descriptor_set(ComputePipeline* pipeline, Descripto
 		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
 		dynamic_offsets.size(), dynamic_offsets.data());
 }
+void CommandBuffer::cmd_draw(uint32_t vertex_count,
+	uint32_t instance_count,
+	uint32_t first_vertex,
+	uint32_t first_instance) {
+	vkCmdDraw(this->vk_command_buffer, vertex_count, instance_count, first_vertex, first_instance);
+}
 void CommandBuffer::cmd_draw_indexed(uint32_t index_count,
 	uint32_t first_index,
 	int32_t vertex_offset,
@@ -699,8 +856,8 @@ void CommandBuffer::cmd_copy_buffer(Buffer* src, Buffer* dst) {
 	region.size = dst->builder._info.size;
 	vkCmdCopyBuffer(vk_command_buffer, src->vk_buffer, dst->vk_buffer, 1, &region);
 }
-void CommandBuffer::cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip) {
-	transition_image_state(this, image, from_state, to_state, mip);
+void CommandBuffer::cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, VkImageSubresourceRange sub_range) {
+	transition_image_state(this, image, from_state, to_state, sub_range);
 }
 void CommandBuffer::cmd_buffer_memory_barrier(Buffer* buffer, ResourceState from_state, ResourceState to_state) {
 	transition_buffer_state(this, buffer, from_state, to_state);
@@ -711,11 +868,16 @@ void CommandBuffer::cmd_image_blit(Image* src, Image* dst, ImageBlit& region, Vk
 		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		1, &region._image_blit, filter);
 }
+void CommandBuffer::cmd_image_copy(Image* src, Image* dst, ImageCopy& region) {
+	vkCmdCopyImage(vk_command_buffer,
+		src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1, &region._image_copy);
+}
 void CommandBuffer::cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset, VkDeviceSize size) {
 	vkCmdFillBuffer(vk_command_buffer, dst_buffer->vk_buffer, dst_offset,
 		(size == VK_WHOLE_SIZE ? dst_buffer->builder._info.size : size), data);
 }
-
 
 // queue
 void Queue::submit(QueueSubmit& info) {
@@ -796,7 +958,7 @@ VertexBuffer::VertexBuffer(VertexBufferBuilder& b, BufferDataUpload upload_optio
 	for (size_t i = 0; i < b._data_handles.size(); ++i) {
 		auto& bb = b._buffer_builders[i];
 		Buffer* buffer = new Buffer(bb);
-		void* data = b._data_handles[i];
+		const void* data = b._data_handles[i];
 		this->buffers.push_back(buffer);
 		if (!data) {
 			continue;
@@ -862,6 +1024,30 @@ Image::Image(ImageBuilder& builder) {
 		std::cout << "Physical device is not capable of creating such image" << std::endl;
 		exit(1);
 	}
+	//VkExtent3D            maxExtent;
+	//uint32_t              maxMipLevels;
+	//uint32_t              maxArrayLayers;
+	//VkSampleCountFlags    sampleCounts;
+	//VkDeviceSize          maxResourceSize;
+	if (props.maxExtent.width < builder._image_info.extent.width ||
+		props.maxExtent.height < builder._image_info.extent.height ||
+		props.maxExtent.depth < builder._image_info.extent.depth) {
+		std::cout << "Image extent exceeds maximum value allowed for its type" << std::endl;
+		exit(1);
+	}
+	if (props.maxMipLevels < builder._image_info.mipLevels) {
+		std::cout << "Image mip levels exceed maximum value allowed for its type" << std::endl;
+		exit(1);
+	}
+	if (props.maxArrayLayers < builder._image_info.arrayLayers) {
+		std::cout << "Image layers exceed maximum allowed value for its type" << std::endl;
+		exit(1);
+	}
+	if (props.sampleCounts && builder._image_info.samples != builder._image_info.samples) {
+		std::cout << "Physical device cannot provide all sample counts requested" << std::endl;
+		exit(1);
+	}
+
 
 	// create image
 	result = vkCreateImage(g_device->vk_device, &builder._image_info, nullptr, &vk_image);
@@ -900,7 +1086,7 @@ Image::~Image() {
 	vkDestroyImage(g_device->vk_device, vk_image, nullptr);
 	vkFreeMemory(g_device->vk_device, vk_memory, nullptr);
 	vkDestroyImageView(g_device->vk_device, vk_view, nullptr);
-	for (auto& p : vk_layers_views) {
+	for (auto& p : vk_subresource_views) {
 		vkDestroyImageView(g_device->vk_device, p.second, nullptr);
 	}
 }
@@ -956,9 +1142,9 @@ void Image::populate_async(void* data, size_t byte_size,
 		uint32_t base_height = builder._image_info.extent.height;
 		for (uint32_t level = 0; level < builder._image_info.mipLevels - 1; ++level) {
 			// get source level ready
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferDst, ResourceState::TransferSrc, level);
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferDst, ResourceState::TransferSrc, { 0, level, 1, 0, 1 });
 			// get dest level ready
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::Created, ResourceState::TransferDst, level + 1);
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::Created, ResourceState::TransferDst, { 0, level + 1, 1, 0, 1 });
 			// blit
 			ImageBlit region;
 			region
@@ -968,11 +1154,11 @@ void Image::populate_async(void* data, size_t byte_size,
 				.dst_mip(level + 1);
 			cmd_buf->cmd_image_blit(this, this, region, VK_FILTER_LINEAR);
 			// convert source level to target state
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferSrc, target_state, level);
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferSrc, target_state, { 0, level, 1, 0, 1 });
 		}
 	}
 	// convert highest level to target state
-	cmd_buf->cmd_image_memory_barrier(this, otcv::ResourceState::TransferDst, target_state, builder._image_info.mipLevels - 1);
+	cmd_buf->cmd_image_memory_barrier(this, otcv::ResourceState::TransferDst, target_state, { 0, builder._image_info.mipLevels - 1, 1, 0, 1 });
 
 	cmd_buf->end();
 
@@ -1068,24 +1254,27 @@ void Image::initialize_state(ResourceState target_state, ResourceState current_s
 	wait_for_async();
 }
 
-VkImageView Image::view_of_layers(uint16_t base, uint16_t count) {
-	assert(builder._image_info.arrayLayers > base);
-	assert(builder._image_info.arrayLayers >= base + count);
-	auto iter = vk_layers_views.find(pack(base, count));
-	if (iter != vk_layers_views.end()) {
+VkImageView Image::view_of_subresource(const VkImageSubresourceRange& range) {
+	assert(builder._image_info.mipLevels > range.baseMipLevel);
+	assert(builder._image_info.mipLevels >= range.baseMipLevel + range.levelCount);
+	assert(builder._image_info.arrayLayers > range.baseArrayLayer);
+	assert(builder._image_info.arrayLayers >= range.baseArrayLayer + range.layerCount);
+	uint32_t view_id = pack(uint8_t(range.baseMipLevel), uint8_t(range.levelCount), uint8_t(range.baseArrayLayer), uint8_t(range.layerCount));
+	auto iter = vk_subresource_views.find(view_id);
+	if (iter != vk_subresource_views.end()) {
 		return iter->second;
 	}
 
 	VkImageViewCreateInfo layer_view_info = builder._view_info;
-	layer_view_info.subresourceRange.baseArrayLayer = base;
-	layer_view_info.subresourceRange.layerCount = count;
+	layer_view_info.subresourceRange = range;
 	VkImageView vk_layers_view;
 	VkResult result = vkCreateImageView(g_device->vk_device, &layer_view_info, nullptr, &vk_layers_view);
 	if (result != VK_SUCCESS) {
-		std::cout << "cannot create layer view for baseArrayLayer = " << base << ", layerCount = " << count << ", error code = " << result << std::endl;
+		std::cout << "cannot create layer view for [mip, count] = [" << range.baseMipLevel  << ", " << range.levelCount << " ]"
+			<< ", [layer, count] = [ " << range.baseArrayLayer << ", " << range.layerCount << " ], error code = " << result << std::endl;
 		exit(1);
 	}
-	vk_layers_views[pack(base, count)] = vk_layers_view;
+	vk_subresource_views[view_id] = vk_layers_view;
 	return vk_layers_view;
 }
 
@@ -1138,7 +1327,7 @@ void Buffer::destroy() {
 	g_user_buffers.erase(ptr);
 }
 
-void Buffer::populate_async(void* data, SyncType sync_type, ResourceState target_state, ResourceState current_state) {
+void Buffer::populate_async(const void* data, SyncType sync_type, ResourceState target_state, ResourceState current_state) {
 	// if fails, call the sync version
 	assert(!(builder._mem_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
 	// should not set any resource state if CPU wait type is set
@@ -1223,7 +1412,7 @@ void Buffer::wait_for_async() {
 	async_ctx = nullptr;
 }
 
-void Buffer::populate(void* data) {
+void Buffer::populate(const void* data) {
 	if (!data) {
 		return;
 	}
@@ -1347,16 +1536,8 @@ PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout*>& set_layo
 
 		if (iter != ranges.end()) {
 			// found range with the same stage flag, merge
-			if (iter->offset < range.offset) {
-				iter->size = range.offset + range.size - iter->offset;
-			}
-			else if (range.offset < iter->offset) {
-				iter->size = iter->offset + iter->size - range.offset;
-				iter->offset = range.offset;
-			}
-			else {
-				assert(false);
-			}
+			iter->offset = std::min(range.offset, iter->offset);
+			iter->size = std::max(iter->offset + iter->size, range.offset + range.size) - iter->offset;
 		}
 		else {
 			ranges.insert(iter, range);
@@ -1450,14 +1631,20 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 			if (set >= layout_binding_set.size()) {
 				layout_binding_set.resize(set + 1);
 			}
-			if (binding >= layout_binding_set[set].size()) {
-				layout_binding_set[set].resize(binding + 1);
-			}
-			layout_binding_set[set][binding].binding = binding;
-			layout_binding_set[set][binding].descriptorType = p.second._type;
-			layout_binding_set[set][binding].descriptorCount = p.second._array_count;
-			layout_binding_set[set][binding].stageFlags |= stage;
-			layout_binding_set[set][binding].pImmutableSamplers = nullptr;
+			VkDescriptorSetLayoutBinding vk_layout_binding = {};
+			vk_layout_binding.binding = binding;
+			vk_layout_binding.descriptorType = p.second._type;
+			vk_layout_binding.descriptorCount = p.second._array_count;
+			vk_layout_binding.stageFlags |= stage;
+			vk_layout_binding.pImmutableSamplers = nullptr;
+			// layout_binding_set[set][binding] = vk_layout_binding;
+			layout_binding_set[set].push_back(vk_layout_binding);
+		}
+		// sort bindings
+		for (auto& bindings : layout_binding_set) {
+			std::sort(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b0, VkDescriptorSetLayoutBinding& b1) {
+				return b0.binding < b1.binding;
+			});
 		}
 	};
 
@@ -1540,24 +1727,29 @@ void GraphicsPipeline::cmd_bind(CommandBuffer* cmd_buffer) {
 }
 
 ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
+	// std::map<uint16_t, std::vector<VkDescriptorSetLayoutBinding>> binding_set_map;
+
 	std::vector<std::vector<VkDescriptorSetLayoutBinding>> layout_binding_set;
 	auto collect_uniforms = [&]() {
 		for (auto& p : compute_shader->builder._uniforms) {
 			uint16_t set;
 			uint16_t binding;
 			otcv::unpack(p.first, set, binding);
-			if (set >= layout_binding_set.size()) {
-				layout_binding_set.resize(set + 1);
-			}
-			if (binding >= layout_binding_set[set].size()) {
-				layout_binding_set[set].resize(binding + 1);
-			}
+			 if (set >= layout_binding_set.size()) {
+				 layout_binding_set.resize(set + 1, {});
+			 }
 			VkDescriptorSetLayoutBinding vk_layout_binding = {};
 			vk_layout_binding.binding = binding;
 			vk_layout_binding.descriptorType = p.second._type;
 			vk_layout_binding.descriptorCount = p.second._array_count;
 			vk_layout_binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-			layout_binding_set[set][binding] = vk_layout_binding;
+			layout_binding_set[set].push_back(vk_layout_binding);
+		}
+		// sort bindings
+		for (auto& bindings : layout_binding_set) {
+			std::sort(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b0, VkDescriptorSetLayoutBinding& b1){
+				return b0.binding < b1.binding;
+			});
 		}
 	};
 
@@ -1586,19 +1778,6 @@ ComputePipeline::ComputePipeline(ShaderModule* compute_shader) {
 	}
 
 	pipeline_layout = new PipelineLayout(desc_set_layouts, push_constant_ranges);
-	//uint16_t pc_offset;
-	//uint16_t pc_size;
-	//otcv::unpack(compute_shader->builder._push_constant_offset_size, pc_offset, pc_size);
-	//if (pc_size > 0) {
-	//	VkPushConstantRange push_constant_range;
-	//	push_constant_range.offset = pc_offset;
-	//	push_constant_range.size = pc_size;
-	//	push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	//	pipeline_layout = new PipelineLayout(desc_set_layouts, { push_constant_range });
-	//}
-	//else {
-	//	pipeline_layout = new PipelineLayout(desc_set_layouts, {});
-	//}
 
 	VkPipelineShaderStageCreateInfo stage_create{};
 	stage_create.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1636,19 +1815,12 @@ void ComputePipeline::destroy() {
 	std::shared_ptr<ComputePipeline> ptr(std::shared_ptr<ComputePipeline>(), this);
 	g_user_compute_pipelines.erase(ptr);
 }
-void ComputePipeline::cmd_bind(CommandBuffer* cmd_buffer) {
-	vkCmdBindPipeline(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, vk_pipeline);
-}
-void ComputePipeline::cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set) {
-	vkCmdBindDescriptorSets(cmd_buffer->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-		pipeline_layout->vk_pipeline_layout, 0, 1, &(set->vk_desc_set), 0, nullptr);
-}
 ImageBlit::ImageBlit() {
 
 	_image_blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	_image_blit.srcSubresource.mipLevel = 0;
 	_image_blit.srcSubresource.baseArrayLayer = 0;
-	_image_blit.srcSubresource.layerCount = 1;
+	_image_blit.srcSubresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
 
 	_image_blit.srcOffsets[0].x = 0;
 	_image_blit.srcOffsets[0].y = 0;
@@ -1661,7 +1833,7 @@ ImageBlit::ImageBlit() {
 	_image_blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	_image_blit.dstSubresource.mipLevel = 0;
 	_image_blit.dstSubresource.baseArrayLayer = 0;
-	_image_blit.dstSubresource.layerCount = 1;
+	_image_blit.dstSubresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
 
 	_image_blit.dstOffsets[0].x = 0;
 	_image_blit.dstOffsets[0].y = 0;
@@ -1710,6 +1882,56 @@ ImageBlit& ImageBlit::dst_aspect(VkImageAspectFlags aspect) {
 }
 ImageBlit& ImageBlit::dst_mip(uint32_t mip) {
 	_image_blit.dstSubresource.mipLevel = mip;
+	return *this;
+}
+
+ImageCopy::ImageCopy() {
+	_image_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	_image_copy.srcSubresource.mipLevel = 0;
+	_image_copy.srcSubresource.baseArrayLayer = 0;
+	_image_copy.srcSubresource.layerCount = 1;
+
+	_image_copy.srcOffset = { 0, 0, 0 };
+
+	_image_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	_image_copy.dstSubresource.mipLevel = 0;
+	_image_copy.dstSubresource.baseArrayLayer = 0;
+	_image_copy.dstSubresource.layerCount = 1;
+
+	_image_copy.dstOffset = { 0, 0, 0 };
+
+	_image_copy.extent = { 0, 0, 0 };
+}
+
+ImageCopy& ImageCopy::extent(uint32_t width, uint32_t height, uint32_t depth) {
+	_image_copy.extent = { width, height, depth };
+	return *this;
+}
+
+ImageCopy& ImageCopy::src_offset(int32_t x, int32_t y, int32_t z) {
+	_image_copy.srcOffset = { x, y, z };
+	return *this;
+}
+ImageCopy& ImageCopy::dst_offset(int32_t x, int32_t y, int32_t z) {
+	_image_copy.dstOffset = { x, y, z };
+	return *this;
+}
+
+ImageCopy& ImageCopy::src_aspect(VkImageAspectFlags aspect) {
+	_image_copy.srcSubresource.aspectMask = aspect;
+	return *this;
+}
+ImageCopy& ImageCopy::src_mip(uint32_t mip) {
+	_image_copy.srcSubresource.mipLevel = mip;
+	return *this;
+}
+
+ImageCopy& ImageCopy::dst_aspect(VkImageAspectFlags aspect) {
+	_image_copy.dstSubresource.aspectMask = aspect;
+	return *this;
+}
+ImageCopy& ImageCopy::dst_mip(uint32_t mip) {
+	_image_copy.dstSubresource.mipLevel = mip;
 	return *this;
 }
 

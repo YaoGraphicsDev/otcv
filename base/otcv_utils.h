@@ -1,8 +1,12 @@
 #pragma once
 #include "otcv.h"
+#include "otcv_buffer_alignment.h"
+#include "otcv_expandable_descriptor_pool.hpp"
 
 namespace otcv {
 uint32_t pack(uint16_t a, uint16_t b);
+
+uint32_t pack(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 
 void unpack(uint32_t ab, uint16_t& a, uint16_t& b);
 
@@ -46,7 +50,7 @@ void staging_queued_copy(void* data, size_t size, Image* image, ResourceState sr
 
 void transition_image_state(CommandBuffer* command_buffer, const Image* image,
 	ResourceState from_state, ResourceState to_state,
-	uint32_t mip);
+	VkImageSubresourceRange sub_range = {0, 0, 1, 0, 1});
 
 void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer, ResourceState from_state, ResourceState to_state);
 

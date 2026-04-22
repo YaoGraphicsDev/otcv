@@ -52,6 +52,18 @@ else()
     message(STATUS "OTCV_ENABLE_VISUALIZER -- OFF")
 endif()
 
+if (OTCV_ENABLE_FRAME_GRAPH)
+    message(STATUS "OTCV_ENABLE_FRAME_GRAPH -- ON")
+else()
+    message(STATUS "OTCV_ENABLE_FRAME_GRAPH -- OFF")
+endif()
+
+if (OTCV_ENABLE_DEMOS)
+    message(STATUS "OTCV_ENABLE_DEMOS -- ON")
+else()
+    message(STATUS "OTCV_ENABLE_DEMOS -- OFF")
+endif()
+
 cmake_minimum_required(VERSION 3.24)
 project(OTCV)
 
@@ -80,4 +92,14 @@ endif()
 # visualizer
 if (OTCV_ENABLE_VISUALIZER)
     add_subdirectory("visualizer")
+endif()
+
+# framegraph
+if (OTCV_ENABLE_FRAME_GRAPH)
+    add_subdirectory("framegraph")
+endif()
+
+# demos
+if (OTCV_ENABLE_DEMOS)
+    add_subdirectory("demos")
 endif()

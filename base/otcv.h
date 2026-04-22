@@ -61,6 +61,10 @@ struct Fence {
 	void destroy();
 
 	void wait_reset();
+	void wait();
+	void reset();
+
+	bool is_signaled();
 
 	VkFenceCreateInfo info;
 	VkFence vk_fence = VK_NULL_HANDLE;
@@ -80,6 +84,10 @@ enum class ResourceState {
 	ComputeSSBOWrite,
 	ComputeSSBO, // Read & Write
 
+	ComputeStorageRead,
+	ComputeStorageWrite,
+	ComputeStorage, // Read & Write
+
 	IndirectRead,
 
 	FragSample,
@@ -89,7 +97,8 @@ enum class ResourceState {
 	DepthStencilAttachment, // Test & Write, might need to differentiate these 2 operations in the future
 	// check out SaschaWillems' shadowmapping example for details. subpass dependency
 
-	Present,
+	PresentAvailableForTransferDst,
+	PresentReady,
 
 	VertexRead,
 	IndexRead,
@@ -122,13 +131,14 @@ struct ComputePipeline;
 struct VertexBuffer;
 struct DescriptorSet;
 struct ImageBlit;
+struct ImageCopy;
 struct CommandBuffer {
 	CommandBuffer(VkCommandBufferAllocateInfo&);
 	~CommandBuffer();
 
 	void begin(bool one_time = false);
 	void end();
-	void reset();
+	void reset(bool release = false);
 	void record(std::function<void(CommandBuffer*)> func, bool one_time = false);
 
 	// graphics pipeline commands
@@ -142,6 +152,7 @@ struct CommandBuffer {
 	void cmd_bind_graphics_pipeline(GraphicsPipeline* pipeline);
 
 	void cmd_bind_vertex_buffer(VertexBuffer* vb, std::vector<VkDeviceSize> offsets = {});
+	void cmd_bind_raw_buffer_as_vertex(Buffer* buf, uint32_t binding, std::vector<VkDeviceSize> offset = { 0 });
 	void cmd_bind_index_buffer(Buffer* ib, VkIndexType type, VkDeviceSize offset = 0);
 
 	void cmd_set_viewport(float width, float height,
@@ -153,6 +164,10 @@ struct CommandBuffer {
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
 	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
 	void cmd_bind_descriptor_set(ComputePipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+	void cmd_draw(uint32_t vertex_count,
+		uint32_t instance_count = 1,
+		uint32_t first_vertex = 0,
+		uint32_t first_instance = 0);
 	void cmd_draw_indexed(uint32_t index_count,
 		uint32_t first_index = 0,
 		int32_t vertex_offset = 0,
@@ -175,12 +190,14 @@ struct CommandBuffer {
 
 	// memory barrier commands
 	// does not allow setting barriers to individual array layers. May lose synchronization granularity
-	void cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, uint32_t mip = 0);
+	void cmd_image_memory_barrier(Image* image, ResourceState from_state, ResourceState to_state, VkImageSubresourceRange sub_range = { 0, 0, 1, 0, 1 });
 	void cmd_buffer_memory_barrier(Buffer* buffer, ResourceState from_state, ResourceState to_state);
 
 	// blit
 	void cmd_image_blit(Image* src, Image* dst, ImageBlit& region, VkFilter filter = VK_FILTER_NEAREST);
 	
+	void cmd_image_copy(Image* src, Image* dst, ImageCopy& region);
+
 	void cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
 
 	VkCommandBuffer vk_command_buffer = VK_NULL_HANDLE;
@@ -188,16 +205,16 @@ struct CommandBuffer {
 	VkCommandBufferBeginInfo begin_info = {};
 };
 struct CommandPool {
-	CommandPool(VkCommandPoolCreateInfo&);
+	CommandPool(bool transient, bool allow_individual_reset);
 	~CommandPool();
-	static CommandPool* create(bool transient, bool allow_reset, bool user = true);
+	static CommandPool* create(bool transient, bool allow_individual_reset, bool user = true);
 	void destroy();
 
 	CommandBuffer* allocate();
+	void reset(bool release = false);
 	void free(CommandBuffer*);
 
 	VkCommandPool vk_command_pool = VK_NULL_HANDLE;
-	std::set<CommandBuffer*> command_buffers = {};
 	VkCommandPoolCreateInfo info = {};
 };
 
@@ -290,12 +307,17 @@ struct DescriptorSet {
 		bool free_required);
 	~DescriptorSet();
 	
+	// TODO: bindings in a descriptor set no longer continuous
 	void bind_image_sampler(uint32_t binding, Image** p_images, Sampler** p_samplers, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_storage_image(uint32_t binding, Image** p_images, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_sampled_image(uint32_t binding, Image** p_images, uint32_t array_start = 0, uint32_t array_count = 1);
 	void bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE);
 	void bind_buffer_array(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize stride, uint32_t count);
+
+	void bind_consecutive_buffers(uint32_t binding_start, uint32_t binding_count, Buffer** p_buffers);
+	void bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
+	void bind_consecutive_storage_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
 
 	VkDescriptorSet vk_desc_set = VK_NULL_HANDLE;
 	VkDescriptorSetAllocateInfo alloc_info = {};
@@ -381,7 +403,7 @@ struct Image {
 
 	void initialize_state(ResourceState target_state, ResourceState current_state = ResourceState::Created);
 
-	VkImageView view_of_layers(uint16_t base, uint16_t count);
+	VkImageView view_of_subresource(const VkImageSubresourceRange& range);
 
 	ImageBuilder builder;
 	VkImage vk_image = VK_NULL_HANDLE;
@@ -390,7 +412,7 @@ struct Image {
 	VkImageView vk_view = VK_NULL_HANDLE;
 	// view of layers
 	// packed index start -- count
-	std::map<uint32_t, VkImageView> vk_layers_views;
+	std::map<uint32_t, VkImageView> vk_subresource_views;
 
 	struct AsyncPopulateCtx {
 		otcv::Fence* fence;
@@ -450,12 +472,12 @@ struct Buffer {
 		CPUWait,
 		GPUBarrier
 	};
-	void populate_async(void* data, SyncType sync_type = SyncType::CPUWait, ResourceState target_state = ResourceState::Null, ResourceState current_state = ResourceState::Null);
+	void populate_async(const void* data, SyncType sync_type = SyncType::CPUWait, ResourceState target_state = ResourceState::Null, ResourceState current_state = ResourceState::Null);
 
 	void wait_for_async();
 
 	// sync version
-	void populate(void* data);
+	void populate(const void* data);
 
 	Buffer* copy_host_mapped(const void* data, uint32_t offset, uint32_t size);
 
@@ -477,8 +499,8 @@ struct Buffer {
 // Vertex Buffer
 struct VertexBuffer;
 struct VertexBufferBuilder {
-	VertexBufferBuilder& add_binding(BufferBuilder b_builder, void* data = nullptr);
-	VertexBufferBuilder& add_binding(); // for consturcting binding description only. Do not build after call
+	VertexBufferBuilder& add_binding(BufferBuilder b_builder, const void* data = nullptr);
+	VertexBufferBuilder& add_binding(); // for constructing binding description only. Do not build after call
 	VertexBufferBuilder& add_attribute(uint32_t binding, VkFormat format, uint32_t byte_size);
 	VertexBufferBuilder& add_attribute_padding(uint32_t binding, uint32_t byte_size);
 	VertexBuffer* build();
@@ -486,7 +508,7 @@ struct VertexBufferBuilder {
 	std::vector<VkVertexInputBindingDescription> _binding_descs;
 	std::vector<VkVertexInputAttributeDescription> _attr_descs;
 	std::vector<BufferBuilder> _buffer_builders;
-	std::vector<void*> _data_handles;
+	std::vector<const void*> _data_handles;
 	bool _buildable = true;
 };
 struct VertexBuffer {
@@ -727,10 +749,6 @@ struct ComputePipeline {
 	static ComputePipeline* create(ShaderModule* compute_shader);
 	void destroy();
 
-	void cmd_bind(CommandBuffer* cmd_buffer);
-	void cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set);
-	// void cmd_push_constant(CommandBuffer* cmd_buffer, const void* data);
-
 	VkPipeline vk_pipeline;
 	ShaderModule* compute_shader;
 	std::vector<DescriptorSetLayout*> desc_set_layouts;
@@ -752,6 +770,23 @@ struct ImageBlit {
 	ImageBlit& dst_mip(uint32_t mip);
 
 	VkImageBlit _image_blit = {};
+};
+
+// copy
+struct ImageCopy {
+	ImageCopy();
+	ImageCopy& extent(uint32_t width, uint32_t height, uint32_t depth = 1);
+
+	ImageCopy& src_offset(int32_t x, int32_t y, int32_t z = 0);
+	ImageCopy& dst_offset(int32_t x, int32_t y, int32_t z = 0);
+
+	ImageCopy& src_aspect(VkImageAspectFlags aspect);
+	ImageCopy& src_mip(uint32_t mip);
+
+	ImageCopy& dst_aspect(VkImageAspectFlags aspect);
+	ImageCopy& dst_mip(uint32_t mip);
+
+	VkImageCopy _image_copy = {};
 };
 
 // framebuffer

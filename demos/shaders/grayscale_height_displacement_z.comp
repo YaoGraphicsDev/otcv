@@ -1,0 +1,81 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// The square patch lies in xoy, centered at origin.
+// Displace position in z direction. Base normals point in +z.
+layout (push_constant) uniform PushConstants {
+    float maxDisplacement;
+    vec2 patchSize;     // size of this patch. x, y
+    ivec2 gridCount;    // number of quads in x/y. vertices are (gridCount.x+1, gridCount.y+1)
+    int vertexStride;              // number of floats
+    int positionAttributeOffset;   // number of floats
+    int normalAttributeOffset;     // number of floats
+} consts;
+
+// set 0 & 1 from outside of framegraph
+layout(set = 0, binding = 0) uniform sampler colorSampler;
+
+// set 2
+//  binding 0 - 15:     textures
+//  binding 16 - 23:    SSBO
+//  binding 24 - 31:    storage image
+layout(set = 2, binding = 0) uniform texture2D colorTexture;
+layout(std430, set = 2, binding = 16) buffer ReadWriteVertexBuffer {
+    float vertices[];
+};
+
+vec3 loadVec3(int vertexIndex, int attribOffset) {
+    int i = vertexIndex * consts.vertexStride + attribOffset;
+    return vec3(vertices[i + 0], vertices[i + 1], vertices[i + 2]);
+}
+
+void storeVec3(int vertexIndex, int attribOffset, vec3 v) {
+    int i = vertexIndex * consts.vertexStride + attribOffset;
+    vertices[i + 0] = v.x;
+    vertices[i + 1] = v.y;
+    vertices[i + 2] = v.z;
+}
+
+float sampleHeight(vec2 uv) {
+    vec3 c = texture(sampler2D(colorTexture, colorSampler), uv).rgb;
+    float gray = dot(c, vec3(0.299, 0.587, 0.114));
+    return gray * consts.maxDisplacement;
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 vertCount = consts.gridCount + ivec2(1);
+
+    if (gid.x >= vertCount.x || gid.y >= vertCount.y)
+        return;
+
+    int vertexIndex = gid.y * vertCount.x + gid.x;
+
+    vec3 pos = loadVec3(vertexIndex, consts.positionAttributeOffset);
+
+    // derive uv from position.xy on a centered patch in xoy
+    vec2 uv = pos.xy / consts.patchSize + 0.5;
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+
+    // displace in +z
+    pos.z = sampleHeight(uv);
+    storeVec3(vertexIndex, consts.positionAttributeOffset, pos);
+
+    // normal from heightmap gradient in texture space
+    vec2 texel = 1.0 / vec2(textureSize(sampler2D(colorTexture, colorSampler), 0));
+
+    float hL = sampleHeight(clamp(uv - vec2(texel.x, 0.0), vec2(0.0), vec2(1.0)));
+    float hR = sampleHeight(clamp(uv + vec2(texel.x, 0.0), vec2(0.0), vec2(1.0)));
+    float hD = sampleHeight(clamp(uv - vec2(0.0, texel.y), vec2(0.0), vec2(1.0)));
+    float hU = sampleHeight(clamp(uv + vec2(0.0, texel.y), vec2(0.0), vec2(1.0)));
+
+    float dx = consts.patchSize.x / float(consts.gridCount.x);
+    float dy = consts.patchSize.y / float(consts.gridCount.y);
+
+    vec3 dPx = vec3(2.0 * dx, 0.0, hR - hL);
+    vec3 dPy = vec3(0.0, 2.0 * dy, hU - hD);
+
+    vec3 N = normalize(cross(dPx, dPy));
+
+    storeVec3(vertexIndex, consts.normalAttributeOffset, N);
+}

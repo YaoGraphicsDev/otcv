@@ -225,7 +225,7 @@ Buffer* BufferBuilder::build() {
 }
 
 // vertex buffer builder
-VertexBufferBuilder& VertexBufferBuilder::add_binding(BufferBuilder b_builder, void* data) {
+VertexBufferBuilder& VertexBufferBuilder::add_binding(BufferBuilder b_builder, const void* data) {
 	_binding_descs.emplace_back();
 	_binding_descs.back().binding = _binding_descs.size() - 1;
 	_binding_descs.back().stride = 0;
