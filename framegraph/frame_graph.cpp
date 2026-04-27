@@ -24,6 +24,7 @@ bool Pass::resource_check(ResourceAccessType access_type, ResourceHandle res_id)
 			}},
 			{ ResourceType::Buffer, {
 				{ ResourceAccessType::VertexIn },
+				{ ResourceAccessType::IndexIn },
 				{ ResourceAccessType::IndirectIn },
 			}},
 		}},
@@ -171,6 +172,10 @@ bool Pass::access(
 		_in_vertices.push_back(id0);
 		_fg._v_resources[id0].reads.push_back(_id);
 	}
+	else if (acc_type == ResourceAccessType::IndexIn) {
+		_in_indices.push_back(id0);
+		_fg._v_resources[id0].reads.push_back(_id);
+	}
 	else if (acc_type == ResourceAccessType::IndirectIn) {
 		_in_indirect = id0;
 		_fg._v_resources[id0].reads.push_back(_id);
@@ -232,24 +237,26 @@ FrameGraph::FrameGraph(
 FrameGraph::~FrameGraph() {
 }
 
-void FrameGraph::reset() {
-	// TODO: deal with descriptor and pool
-	// reset this frame's descriptor pool?
-	assert(false);
-	// TODO: pass in FrameRecordInput and reset descriptor pool here
-
-	_dag->clear();
-	_passes.clear();
-	_sorted_passes.clear();
-
-	_v_resources.clear();
-	_l_resources.clear();
-	_img_resource_ids.clear();
-	_buf_resource_ids.clear();
-
-	_backbuffer_id = FG_INVALID_HANDLE;
-	_state = State::Building;
-}
+//void FrameGraph::reset() {
+//	// TODO: deal with descriptor and pool
+//	// reset this frame's descriptor pool?
+//	assert(false);
+//	// TODO: pass in FrameRecordInput and reset descriptor pool here
+//
+//	_dag->clear();
+//	_img_allocator = nullptr;
+//	_buf_allocator = nullptr;
+//	_passes.clear();
+//	_sorted_passes.clear();
+//
+//	_v_resources.clear();
+//	_l_resources.clear();
+//	_img_resource_ids.clear();
+//	_buf_resource_ids.clear();
+//
+//	_backbuffer_id = FG_INVALID_HANDLE;
+//	_state = State::Building;
+//}
 
 Pass& FrameGraph::add_pass(const std::string& name, PassType type) {
 	if (_state != State::Building) {
@@ -375,13 +382,14 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 	std::vector<FrameRecordInput> record_inputs;
 	record_inputs.reserve(n_frames);
 	for (uint32_t n = 0; n < n_frames; ++n) {
-		record_inputs.emplace_back(_passes.size());
+		record_inputs.emplace_back(_sorted_passes.size());
 	}
 
 	// setup descriptor set layout for each pass
 	_pass_desc_set_layouts.resize(_passes.size());
 
-	for (PassHandle p_id = 0; p_id < _passes.size(); ++p_id) {
+	for (PassHandle p_id : _sorted_passes) {
+	// for (PassHandle p_id = 0; p_id < _passes.size(); ++p_id) {
 		const Pass& pass = _passes[p_id];
 		if (pass._type != PassType::Graphics && pass._type != PassType::Compute && pass._type != PassType::Transfer) {
 			assert(false);
@@ -638,6 +646,15 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			}
 		}
 
+		// input index buffer
+		for (ResourceHandle v : _passes[p]._in_indices) {
+			if (v2l_map.count(v) == 0) { // some pass has got to have output this buffer before this pass
+				std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
+				assert(false);
+				return { false, {} };
+			}
+		}
+
 		// input indirect
 		{
 			ResourceHandle v = _passes[p]._in_indirect;
@@ -817,6 +834,9 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 					break;
 				case RAT::VertexIn:
 					virtual_buffer_usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+					break;
+				case RAT::IndexIn:
+					virtual_buffer_usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 					break;
 				case RAT::IndirectIn:
 					virtual_buffer_usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -1009,11 +1029,31 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		}
 	}
 
+	// configure index buffers
+	std::vector<CacheEntryHandle> ib_cache_ids;
+	for (ResourceHandle v_id : pass._in_indices) {
+		ResourceHandle p_id = id_v2p(v_id);
+		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+		ib_cache_ids.push_back(_buf_resource_ids[p_id]);
+		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
+
+		// layout transition
+		if (buf_ptr->state != ResourceState::IndexRead) {
+			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::IndexRead);
+			buf_ptr->state = ResourceState::IndexRead;
+		}
+	}
+
 	// populate PassContext
 	PassContext p_ctx;
 	p_ctx.desc_set = input.desc_set;
 	p_ctx.vertex_bufs.reserve(pass._in_vertices.size());
 	std::transform(vb_cache_ids.begin(), vb_cache_ids.end(), std::back_inserter(p_ctx.vertex_bufs),
+		[&](CacheEntryHandle id) {
+		return _buf_allocator->storage(id)->resource;
+	});
+	p_ctx.index_bufs.reserve(pass._in_indices.size());
+	std::transform(ib_cache_ids.begin(), ib_cache_ids.end(), std::back_inserter(p_ctx.index_bufs),
 		[&](CacheEntryHandle id) {
 		return _buf_allocator->storage(id)->resource;
 	});
@@ -1302,7 +1342,6 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 			for (CacheEntryHandle& id : image_cache_ids) {
 				new_storage_images.push_back(_img_allocator->storage(id)->resource);
 			}
-			std::cout << "image_cache_ids[0] = " << image_cache_ids[0] << std::endl;
 			input.desc_set->bind_consecutive_storage_images(StorageImageBaseBinding, new_storage_images.size(), new_storage_images.data());
 			std::copy(image_cache_ids.begin(), image_cache_ids.end(), input.storage_images.begin());
 		}
@@ -1399,7 +1438,7 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 	}
 	// transfer target
 	for (auto v_id_pair : pass._target_transfer) {
-		assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
+		assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout transfer target virtual id pair must point to the same physical id. Guaranteed by compile()
 		ResourceHandle v_id = v_id_pair.first;
 		ResourceHandle p_id = id_v2p(v_id);
 		if (_v_resources[v_id].type == ResourceType::Image) {

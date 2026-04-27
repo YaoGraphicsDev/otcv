@@ -110,6 +110,8 @@ struct Swapchain {
 	
 	Image* mock_image(uint32_t id);
 
+	void recreate(void* window_data);
+
 	VkSwapchainKHR vk_swapchain;
 	std::vector<VkImage> images{};
 	std::vector<VkImageView> views{};
@@ -249,7 +251,7 @@ struct QueuePresent {
 struct Queue {
 	VkQueue vk_queue = VK_NULL_HANDLE;
 	void submit(QueueSubmit& info);
-	void present(QueuePresent& info);
+	VkResult present(QueuePresent& info);
 	void idle_wait();
 };
 
@@ -381,6 +383,13 @@ struct ImageBuilder {
 };
 struct Image {
 	Image(ImageBuilder& builder);
+	Image() :
+		builder(ImageBuilder()),
+		vk_image(VK_NULL_HANDLE),
+		vk_memory(VK_NULL_HANDLE),
+		vk_view(VK_NULL_HANDLE),
+		vk_subresource_views({}),
+		async_ctx(nullptr) {};
 	~Image();
 	void destroy();
 

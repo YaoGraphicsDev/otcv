@@ -1,4 +1,5 @@
-#include "otcv_utils.h"
+#include "otcv_config.h"
+#include "otcv_utils_internal.h"
 #include "otcv_globals.h"
 
 #include <cassert>
@@ -737,5 +738,6 @@ VertexBuffer* screen_quad_ndc() {
 	otcv::VertexBuffer* vb = vbb.build();
 	return vb;
 }
+
 
 }

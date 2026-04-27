@@ -1,5 +1,6 @@
 #include "otcv.h"
 #include "otcv_config.h"
+#include "otcv_utils_internal.h"
 #include "otcv_globals.h"
 
 #include <iostream>
@@ -8,7 +9,7 @@
 #include <memory>
 #include <algorithm>
 
-#ifdef OTCV_WINDOW == GLFW
+#if OTCV_WINDOW == GLFW
 #include <glfw/glfw3.h>
 #endif
 
@@ -57,7 +58,7 @@ void create_instance() {
 
     uint32_t window_extension_count = 0;
     const char** window_extensions = nullptr;
-#ifdef OTCV_WINDOW == GLFW
+#if OTCV_WINDOW == GLFW
     // glfw extension
     window_extensions = glfwGetRequiredInstanceExtensions(&window_extension_count);
 #endif
@@ -293,8 +294,11 @@ void create_swapchain(void* window_data) {
     // Screen coordinates and pixels may not be the same on MacOS. Very likely to take the same value on Windows.
     int width_pixels;
     int height_pixels;
-#ifdef OTCV_WINDOW == GLFW
+#if OTCV_WINDOW == GLFW
     glfwGetFramebufferSize((GLFWwindow*)window_data, &width_pixels, &height_pixels);
+#else
+    std::cout << "Window systems other that glfw not supported" << std::endl;
+    exit(1);
 #endif
 
     VkExtent2D window_extent;
@@ -304,7 +308,12 @@ void create_swapchain(void* window_data) {
     VkSwapchainCreateInfoKHR create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     create_info.surface = g_surface->vk_surface;
-    create_info.minImageCount = surface_caps.minImageCount;
+    if (surface_caps.maxImageCount == 0) {
+        create_info.minImageCount = surface_caps.minImageCount + 1;
+    }
+    else {
+        create_info.minImageCount = std::min(surface_caps.minImageCount + 1, surface_caps.maxImageCount);
+    }
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
     create_info.imageExtent = window_extent;

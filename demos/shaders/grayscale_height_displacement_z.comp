@@ -13,13 +13,13 @@ layout (push_constant) uniform PushConstants {
 } consts;
 
 // set 0 & 1 from outside of framegraph
-layout(set = 0, binding = 0) uniform sampler colorSampler;
+layout(set = 0, binding = 0) uniform sampler heightSampler;
 
 // set 2
 //  binding 0 - 15:     textures
 //  binding 16 - 23:    SSBO
 //  binding 24 - 31:    storage image
-layout(set = 2, binding = 0) uniform texture2D colorTexture;
+layout(set = 2, binding = 0) uniform texture2D heightTexture;
 layout(std430, set = 2, binding = 16) buffer ReadWriteVertexBuffer {
     float vertices[];
 };
@@ -37,9 +37,8 @@ void storeVec3(int vertexIndex, int attribOffset, vec3 v) {
 }
 
 float sampleHeight(vec2 uv) {
-    vec3 c = texture(sampler2D(colorTexture, colorSampler), uv).rgb;
-    float gray = dot(c, vec3(0.299, 0.587, 0.114));
-    return gray * consts.maxDisplacement;
+    float height = texture(sampler2D(heightTexture, heightSampler), uv).r;
+    return height * consts.maxDisplacement;
 }
 
 void main() {
@@ -62,7 +61,7 @@ void main() {
     storeVec3(vertexIndex, consts.positionAttributeOffset, pos);
 
     // normal from heightmap gradient in texture space
-    vec2 texel = 1.0 / vec2(textureSize(sampler2D(colorTexture, colorSampler), 0));
+    vec2 texel = 1.0 / vec2(textureSize(sampler2D(heightTexture, heightSampler), 0));
 
     float hL = sampleHeight(clamp(uv - vec2(texel.x, 0.0), vec2(0.0), vec2(1.0)));
     float hR = sampleHeight(clamp(uv + vec2(texel.x, 0.0), vec2(0.0), vec2(1.0)));

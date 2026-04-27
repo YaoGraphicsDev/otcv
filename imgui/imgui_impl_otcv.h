@@ -48,6 +48,8 @@ void ImGui_ImplOTCV_RenderDrawData(otcv::Image* target, ImGui_ImplOTCV_Synchroni
 void ImGui_ImplOTCV_CreateOTCVObjects();
 void ImGui_ImplOTCV_DestroyDeviceObjects();
 ImGui_ImplOTCV_Data* ImGui_ImplOTCV_GetBackendData();
+// void ImGui_ImplOTCV_BuildDescriptorSet();
 void ImGui_ImplOTCV_BuildBuffers();
+void ImGui_ImplOTCV_BuildBuffers(otcv::VertexBuffer* vb, otcv::Buffer*& ib);
 void ImGui_ImplOTCV_Commands(otcv::CommandBuffer* command_buffer, otcv::Image* render_target, ImGui_ImplOTCV_SynchronizationInfo* info);
-
+void ImGui_ImplOTCV_Exec(otcv::CommandBuffer* command_buffer, otcv::VertexBuffer* vb = nullptr, otcv::Buffer* ib = nullptr);

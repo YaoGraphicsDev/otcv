@@ -1,17 +1,42 @@
 #include <iostream>
+#include <chrono>
+#include <thread>
 #include <GLFW/glfw3.h>
 
 #include "frame_graph.hpp"
 #include "otcv.h"
 #include "otcv_utils.h"
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_otcv.h"
+
 #include "assets.h"
 
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 
-const int window_width = 1920;
-const int window_height = 960;
+const int init_window_width = 960;
+const int init_window_height = 480;
+
+bool window_minimized = false;
+void window_iconified_callback(GLFWwindow* window, int iconified) {
+    if (iconified == GLFW_TRUE) {
+        // minimized
+        window_minimized = true;
+    }
+    else {
+        // restored
+        window_minimized = false;
+    }
+}
+
+//int window_width = init_window_width;
+//int window_height = init_window_height;
+//void window_resize_callback(GLFWwindow* window, int width, int height) {
+//    window_width = width;
+//    window_height = height;
+//}
 
 using namespace otcv;
 
@@ -65,31 +90,49 @@ public:
     void run() {
         init_window();
         init_vulkan_context();
+        init_imgui();
         load_shaders();
         init_computes();
         init_desc_pool();
         init_objects();
         init_frame_contexts();
-        init_framegraph();
+        configure_framegraph();
         main_loop();
     }
 
     void draw_frame() {
+
         FrameContext& f = frame_ctxs[current_frame];
         f.frame_fence->wait();
+
+        update_camera();
+
+        immediate_gui();
+        ImGui_ImplOTCV_BuildBuffers(imgui_meshes[current_frame].vb, imgui_meshes[current_frame].ib);
+
+        if (framegraph_rebuid) {
+            vkDeviceWaitIdle(_otcv_context.device->vk_device);
+            configure_framegraph();
+        }
+
 
         f.command_pool->reset();
 
         uint32_t swapchain_image_id = 0;
-        vkAcquireNextImageKHR(
+        VkResult acquire_result = vkAcquireNextImageKHR(
             _otcv_context.device->vk_device,
             _otcv_context.swapchain->vk_swapchain, UINT64_MAX,
             f.image_available_semaphore->vk_semaphore, VK_NULL_HANDLE,
             &swapchain_image_id);
+        if (acquire_result != VK_SUCCESS) {
+            std::cout << "Unrecognized acquire error. error code = " << acquire_result << std::endl;
+            return;
+        }
 
         if (!fg->record(fg_record_inputs[current_frame])) {
             return;
         }
+
 
         // reset frame fence only after framegraph record.
         // Because FrameGraph::record() will try acquire from transient resource caches, which rely on fence state to tell if a piece of resource can be reused.
@@ -133,11 +176,33 @@ public:
         present
             .image_index(swapchain_image_id)
             .add_wait(f.transfer_finished_semaphore);
-        _otcv_context.queue->present(present);
+        VkResult present_result = _otcv_context.queue->present(present);
+
+        // window resize event
+        // at least this works on vulkan 1.3, rtx 5050.
+        // Other dirvers may return this error at acquire next image or may not return at all.
+        // If that happens we may need to handle resize in glfw resize callback
+        if (present_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            vkDeviceWaitIdle(_otcv_context.device->vk_device);
+            _otcv_context.swapchain->recreate(_window);
+            for (uint32_t i = 0; i < _otcv_context.swapchain->images.size(); ++i) {
+                _otcv_context.swapchain->mock_image(i)->initialize_state(otcv::ResourceState::PresentReady);
+            }
+            window_width = _otcv_context.swapchain->image_info.extent.width;
+            window_height = _otcv_context.swapchain->image_info.extent.height;
+            configure_framegraph();
+            return; // reset framegraph and img/buf allocators. Return immediately. No more operations for this frame from this point on
+        }
+        else if (present_result != VK_SUCCESS) {
+            std::cout << "Unrecognized present error. error code = " << present_result << std::endl;
+            assert(false);
+            return;
+        }
 
         img_allocator->end_frame_recording(f.frame_fence);
         buf_allocator->end_frame_recording(f.frame_fence);
-        current_frame = (current_frame + 1) % frame_ctxs.size();
+        std::cout << "img_allocator capacity = " << img_allocator->capacity() << ", size = " << img_allocator->alive_count() << std::endl;
+        std::cout << "buf_allocator capacity = " << buf_allocator->capacity() << ", size = " << buf_allocator->alive_count() << std::endl;
     }
 
     void copy_backbuffer_commands(otcv::CommandBuffer* cmd_buf, fg::PhysicalImagePtr backbuffer, uint32_t image_id) {
@@ -169,15 +234,54 @@ public:
             otcv::ResourceState::PresentReady);
     }
 
+    void immediate_gui() {
+        ImGuiIO& io = ImGui::GetIO();
+        
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        {
+            ImGui::Begin("Framegraph Configuration");
+
+            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+            if (ImGui::Button("Rebuild")) {
+                framegraph_rebuid = true;
+            }
+            else {
+                framegraph_rebuid = false;
+            }
+            
+            ImGui::Checkbox("Blend", &fg_config.blend);
+            ImGui::Checkbox("Billow", &fg_config.billow);
+
+            ImGui::End();
+        }
+        ImGui::Render();
+    }
+
+    void update_camera() {
+        cam.aspect = (float)window_width / (float)window_height;
+        cam.update_view();
+        cam.update_proj();
+    }
+
     void main_loop() {
         while (!glfwWindowShouldClose(_window)) {
             glfwPollEvents();
-            draw_frame();
+            if (!window_minimized) {
+                draw_frame();
+                current_frame = (current_frame + 1) % frame_ctxs.size();
+            }
+            else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
         vkDeviceWaitIdle(_otcv_context.device->vk_device);
     }
 
     void cleanup() {
+        ImGui_ImplOTCV_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
         otcv::destroy_context();
         glfwDestroyWindow(_window);
         glfwTerminate();
@@ -186,16 +290,50 @@ public:
     void init_window() {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-        _window = glfwCreateWindow(window_width, window_height, "Framegraph Demo", nullptr, nullptr);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        
+        _window = glfwCreateWindow(init_window_width, init_window_height, "Framegraph Demo", nullptr, nullptr);
         glfwSetWindowUserPointer(_window, this);
+
+        // handle minimize/restore events
+        glfwSetWindowIconifyCallback(_window, window_iconified_callback);
+        // handle window resize events
+        // glfwSetWindowSizeCallback(_window, window_resize_callback);
     }
 
     void init_vulkan_context() {
         _otcv_context = otcv::create_context(_window);
         for (uint32_t i = 0; i < _otcv_context.swapchain->images.size(); ++i) {
             _otcv_context.swapchain->mock_image(i)->initialize_state(otcv::ResourceState::PresentReady);
+        }
+        // initialize window height and width here because glfw framebuffer size, which is the size of swapchain images, may be different from window size
+        window_width = _otcv_context.swapchain->image_info.extent.width;
+        window_height = _otcv_context.swapchain->image_info.extent.height;
+    }
+
+    void init_imgui() {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        // io.DisplaySize = ImVec2(init_window_width, init_window_height);
+        io.ConfigFlags |= ImGuiConfigFlags_NavNoCaptureKeyboard;
+        ImGui::StyleColorsDark();
+        
+        ImGui_ImplGlfw_InitForVulkan(_window, true);
+        
+        ImGui_ImplOTCV_InitInfo info;
+        info.queue = _otcv_context.queue;
+        // can also add font here
+        info.target_format = _otcv_context.swapchain->image_info.format;
+        ImGui_ImplOTCV_Init(&info);
+
+        imgui_meshes.resize(_otcv_context.swapchain->images.size());
+        for (auto& mesh : imgui_meshes) {
+            ImGui_ImplOTCV_Data* bd = ImGui_ImplOTCV_GetBackendData();
+            VertexBufferBuilder vb_builder = bd->vertex_buffer->builder;
+            mesh.vb = vb_builder.build();
+            BufferBuilder ib_builder = bd->index_buffer->builder;
+            mesh.ib = ib_builder.build();
         }
     }
 
@@ -245,8 +383,20 @@ public:
             .add_binding()
             .add_attribute(0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec3))    // position
             .add_attribute(0, VK_FORMAT_R32G32_SFLOAT, sizeof(glm::vec2));      // uv
-        // full screen graphics pipeline
-        GraphicsPipeline* full_screen = otcv::GraphicsPipelineBuilder()
+        // transparent overlay pipeline
+        GraphicsPipeline* transparent_overlay = otcv::GraphicsPipelineBuilder()
+            .pipline_rendering()
+                .add_color_attachment_format(VK_FORMAT_R16G16B16A16_SFLOAT)
+            .end()
+            .shader_vertex(shader_blob.at("screen_quad.vert"))
+            .shader_fragment(shader_blob.at("screen_quad_alpha.frag"))
+            .vertex_state(pos3uv2vbb)
+            .blend_attachment(0).end() // default alpha blend
+            .add_dynamic_state(VK_DYNAMIC_STATE_VIEWPORT)
+            .add_dynamic_state(VK_DYNAMIC_STATE_SCISSOR)
+            .build();
+        // tone mapping graphics pipeline
+        GraphicsPipeline* tone_mapping = otcv::GraphicsPipelineBuilder()
             .pipline_rendering()
                 .add_color_attachment_format(_otcv_context.swapchain->image_info.format)
             .end()
@@ -300,7 +450,7 @@ public:
             // ribbon.compute_desc_set->bind_buffer(1, ribbon.vb->buffers[0]);
 
             ribbon.use_solid_color = 1;
-            ribbon.solid_color = glm::vec3(0.102f, 0.859f, 0.843f);
+            ribbon.solid_color = glm::vec3(0.878, 0.239, 0.573);
             ribbon.double_sided = 1;
             ribbon.opacity = 1.0f;
         }
@@ -325,7 +475,7 @@ public:
             ground.graphics = one_sided;
             ground.model_mat =
                 glm::translate(glm::mat4(1.0f), { 0.0f, -0.15f, 0.0f }) *
-                glm::scale(glm::mat4(1.0f), { 5.0f, 0.3f, 5.0f });
+                glm::scale(glm::mat4(1.0f), { 10.0f, 0.3f, 10.0f });
             ground.ubo.reset(new StaticUBO(ubo_alignment));
             ground.ubo->set(StaticUBOAccess()["model"], &ground.model_mat);
             glm::mat4 pv = cam.proj * cam.view;
@@ -333,41 +483,57 @@ public:
             ground.graphics_desc_set = desc_pool->allocate(ground.graphics->desc_set_layouts[0]);
             ground.graphics_desc_set->bind_buffer(0, ground.ubo->_buf);
             ground.graphics_desc_set->bind_sampler(1, &linear_sampler);
-            ground.use_solid_color = 0;
+
+            ground.use_solid_color = 1;
+            ground.solid_color = glm::vec3(0.224, 0.412, 0.231);
             ground.double_sided = 0;
             ground.opacity = 1.0f;
         }
-        // screen quad
+        // screen quads
         {
-            screen_quad.vb = screen_quad_ndc();
-            screen_quad.graphics = full_screen;
-            screen_quad.graphics_desc_set = desc_pool->allocate(screen_quad.graphics->desc_set_layouts[0]);
-            screen_quad.graphics_desc_set->bind_sampler(0, &nearest_sampler);
+            screen_quad_overlay.vb = screen_quad_ndc();
+            screen_quad_overlay.graphics = transparent_overlay;
+            screen_quad_overlay.graphics_desc_set = desc_pool->allocate(screen_quad_overlay.graphics->desc_set_layouts[0]);
+            screen_quad_overlay.graphics_desc_set->bind_sampler(0, &linear_sampler);
+        }
+        {
+            screen_quad_tonemap.vb = screen_quad_ndc();
+            screen_quad_tonemap.graphics = tone_mapping;
+            screen_quad_tonemap.graphics_desc_set = desc_pool->allocate(screen_quad_tonemap.graphics->desc_set_layouts[0]);
+            screen_quad_tonemap.graphics_desc_set->bind_sampler(0, &nearest_sampler);
         }
     }
 
     void init_computes() {
-        comp_animate_texture = otcv::ComputePipeline::create(shader_blob.at("animated_texture.comp"));
+        comp_animate_vein = otcv::ComputePipeline::create(shader_blob.at("animated_vein_texture.comp"));
+        comp_animate_billow = otcv::ComputePipeline::create(shader_blob.at("animated_billow_texture.comp"));
         comp_height_displacement = otcv::ComputePipeline::create(shader_blob.at("grayscale_height_displacement_z.comp"));
     }
 
-    void init_framegraph() {
+    void configure_framegraph() {
         img_allocator.reset(new fg::TransientImageCache);
+        // img_allocator->set_expire_interval(30);
         buf_allocator.reset(new fg::TransientBufferCache);
+        // buf_allocator->set_expire_interval(30);
         fg.reset(new fg::FrameGraph(img_allocator, buf_allocator));
 
         // resources
-        fg::ResourceHandle animated_texture = fg->add_resource("AnimatedTexture",
+        fg::ResourceHandle animated_vein_texture = fg->add_resource("AnimatedVeinTexture",
             ImageBuilder()
             .size(512, 512, 1)
             .format(VK_FORMAT_R8G8B8A8_UNORM));
+
+        fg::ResourceHandle animated_billow_texture = fg->add_resource("AnimatedBillowTexture",
+            ImageBuilder()
+            .size(64, 64, 1)
+            .format(VK_FORMAT_R32_SFLOAT));
 
         fg::ResourceHandle vertices_base = fg->add_resource("VerticesBase",
             BufferBuilder()
             .size(ribbon.vb->buffers[0]->builder._info.size)
             .host_access(otcv::BufferBuilder::Access::Invisible));
         
-        fg::ResourceHandle vertices_displaced = fg->add_resource("displacedVertices",
+        fg::ResourceHandle vertices_displaced = fg->add_resource("DisplacedVertices",
             BufferBuilder()
             .size(ribbon.vb->buffers[0]->builder._info.size)
             .host_access(otcv::BufferBuilder::Access::Invisible));
@@ -383,16 +549,52 @@ public:
             .size(window_width, window_height, 1)
             .format(VK_FORMAT_R16G16B16A16_SFLOAT));
 
-        fg::ResourceHandle tonemapped = fg->add_resource("Tonemapped", // this is going to be copied to swapchain
+        fg::ResourceHandle blended = fg->add_resource("blended",
+            ImageBuilder()
+            .size(window_width, window_height, 1)
+            .format(VK_FORMAT_R16G16B16A16_SFLOAT));
+
+        fg::ResourceHandle tonemapped = fg->add_resource("Tonemapped",
+            ImageBuilder()
+            .size(window_width, window_height, 1)
+            .format(_otcv_context.swapchain->image_info.format));  // this is going to be copied to swapchain
+
+        fg::ResourceHandle ui_overlayed = fg->add_resource("UIOverlayed",
             ImageBuilder()
             .size(window_width, window_height, 1)
             .format(_otcv_context.swapchain->image_info.format));
 
         // passes
+        fg::Pass& ui_overlay_pass = fg->add_pass("UIOverlayPass", fg::PassType::Graphics);
+        ui_overlay_pass.access(fg::ResourceAccessType::ColorInOut, tonemapped, ui_overlayed);
+        ui_overlay_pass.store_load_func(tonemapped, [&](RenderingBegin::Attachment& attachment) {
+            attachment
+                .load_store(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+        });
+        ui_overlay_pass.render_area_func([&](RenderingBegin& begin) {
+            begin.area(window_width, window_height);
+        });
+        ui_overlay_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
+            ImGui_ImplOTCV_Exec(cmd, imgui_meshes[current_frame].vb, imgui_meshes[current_frame].ib);
+        });
+
+        fg::Pass& billow_texture_animation_pass = fg->add_pass("BillowTextureAnimation", fg::PassType::Compute);
+        billow_texture_animation_pass.access(fg::ResourceAccessType::StorageImageOut, animated_billow_texture);
+        billow_texture_animation_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
+            auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count();
+            float time = now / 1000.0f;
+            cmd->cmd_bind_compute_pipeline(comp_animate_billow);
+            cmd->cmd_bind_descriptor_set(comp_animate_billow, ctx.desc_set, 2);
+            cmd->cmd_push_constant(comp_animate_billow, "t", &time);
+            cmd->cmd_dispatch(calc_group_count(64, 16), calc_group_count(64, 16)); // local size 16. Hardcoded 512 for the moment
+        });
+
         fg::Pass& vertex_copy_pass = fg->add_pass("VertexCopyPass", fg::PassType::Transfer);
         vertex_copy_pass.access(fg::ResourceAccessType::TransferOut, vertices_base);
         vertex_copy_pass.pre_pass_func([&](CommandBuffer* cmd) {
-            cmd->cmd_buffer_memory_barrier(ribbon.vb->buffers[0], ResourceState::Created, ResourceState::TransferSrc);
+            cmd->cmd_buffer_memory_barrier(ribbon.vb->buffers[0], ResourceState::Created, ResourceState::TransferSrc); // will get called every frame
         });
         vertex_copy_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
             cmd->cmd_copy_buffer(ribbon.vb->buffers[0], ctx.transfer_bufs[0]);
@@ -402,13 +604,13 @@ public:
         });
 
         fg::Pass& height_pass = fg->add_pass("HeightDisplacement", fg::PassType::Compute);
-        height_pass.access(fg::ResourceAccessType::TextureIn, animated_texture);
+        height_pass.access(fg::ResourceAccessType::TextureIn, animated_billow_texture);
         height_pass.access(fg::ResourceAccessType::SSBOInOut, vertices_base, vertices_displaced);
         height_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
             cmd->cmd_bind_compute_pipeline(comp_height_displacement);
             cmd->cmd_bind_descriptor_set(comp_height_displacement, ribbon.compute_desc_set, 0);
             cmd->cmd_bind_descriptor_set(comp_height_displacement, ctx.desc_set, 2);
-            float max_displacement = 0.1f;
+            float max_displacement = 0.2f;
             glm::vec2 patch_size = glm::vec2(1.0f);
             glm::ivec2 grid_count = glm::ivec2(kRibbonGridCount);
             int vertex_stride = 8;
@@ -423,8 +625,30 @@ public:
             cmd->cmd_dispatch(calc_group_count(kRibbonGridCount + 1, 16), calc_group_count(kRibbonGridCount + 1, 16)); // local size 16. Hardcoded 512 for the moment
         });
 
+        fg::Pass& blend_pass = fg->add_pass("BlendPass", fg::PassType::Graphics);
+        blend_pass.access(fg::ResourceAccessType::TextureIn, animated_vein_texture);
+        blend_pass.access(fg::ResourceAccessType::ColorInOut, opaque, blended);
+        blend_pass.store_load_func(opaque, [&](RenderingBegin::Attachment& attachment) {
+            attachment
+                .load_store(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+        });
+        blend_pass.render_area_func([&](RenderingBegin& begin) {
+            begin.area(window_width, window_height);
+        });
+        blend_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
+            cmd->cmd_bind_graphics_pipeline(screen_quad_overlay.graphics);
+            float alpha = 0.2f;
+            cmd->cmd_push_constant(screen_quad_overlay.graphics, "alpha", &alpha);
+            cmd->cmd_bind_descriptor_set(screen_quad_overlay.graphics, screen_quad_overlay.graphics_desc_set, 0);
+            cmd->cmd_bind_descriptor_set(screen_quad_overlay.graphics, ctx.desc_set, 1);
+            cmd->cmd_bind_vertex_buffer(screen_quad_overlay.vb);
+            cmd->cmd_set_scissor(window_width, window_height);
+            cmd->cmd_set_viewport(window_width, window_height);
+            cmd->cmd_draw(3);
+        });
+
         fg::Pass& tonemapping_pass = fg->add_pass("ToneMappingPass", fg::PassType::Graphics);
-        tonemapping_pass.access(fg::ResourceAccessType::TextureIn, opaque);
+        tonemapping_pass.access(fg::ResourceAccessType::TextureIn, fg_config.blend ? blended : opaque);
         tonemapping_pass.access(fg::ResourceAccessType::ColorOut, tonemapped);
         tonemapping_pass.store_load_func(tonemapped, [&](RenderingBegin::Attachment& attachment) {
             attachment
@@ -434,20 +658,20 @@ public:
             begin.area(window_width, window_height);
         });
         tonemapping_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
-            cmd->cmd_bind_graphics_pipeline(screen_quad.graphics);
-            cmd->cmd_bind_descriptor_set(screen_quad.graphics, screen_quad.graphics_desc_set, 0);
-            cmd->cmd_bind_descriptor_set(screen_quad.graphics, ctx.desc_set, 1);
-            cmd->cmd_bind_vertex_buffer(screen_quad.vb);
+            cmd->cmd_bind_graphics_pipeline(screen_quad_tonemap.graphics);
+            cmd->cmd_bind_descriptor_set(screen_quad_tonemap.graphics, screen_quad_tonemap.graphics_desc_set, 0);
+            cmd->cmd_bind_descriptor_set(screen_quad_tonemap.graphics, ctx.desc_set, 1);
+            cmd->cmd_bind_vertex_buffer(screen_quad_tonemap.vb);
             cmd->cmd_set_scissor(window_width, window_height);
             cmd->cmd_set_viewport(window_width, window_height);
             cmd->cmd_draw(3);
         });
 
         fg::Pass& opaque_pass = fg->add_pass("Opaque", fg::PassType::Graphics);
-        opaque_pass.access(fg::ResourceAccessType::TextureIn, animated_texture);
+        opaque_pass.access(fg::ResourceAccessType::TextureIn, animated_vein_texture);
         opaque_pass.access(fg::ResourceAccessType::DepthStencilOut, depth);
         opaque_pass.access(fg::ResourceAccessType::ColorOut, opaque);
-        opaque_pass.access(fg::ResourceAccessType::VertexIn, vertices_displaced);
+        opaque_pass.access(fg::ResourceAccessType::VertexIn, fg_config.billow ? vertices_displaced : vertices_base);
         opaque_pass.store_load_func(opaque, [&](RenderingBegin::Attachment& attachment) {
             attachment
                 .load_store(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE)
@@ -496,20 +720,22 @@ public:
             cmd->cmd_draw_indexed(ground.ib->builder._info.size / sizeof(uint16_t));
         });
 
-        fg::Pass& texture_animation_pass = fg->add_pass("TextureAnimation", fg::PassType::Compute);
-        texture_animation_pass.access(fg::ResourceAccessType::StorageImageOut, animated_texture);
-        texture_animation_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
-            static int frame_count = 0;
-            ++frame_count;
-            float time = frame_count / 60.0f;
-            cmd->cmd_bind_compute_pipeline(comp_animate_texture);
-            cmd->cmd_bind_descriptor_set(comp_animate_texture, ctx.desc_set, 2);
-            cmd->cmd_push_constant(comp_animate_texture, "t", &time);
+        fg::Pass& vein_texture_animation_pass = fg->add_pass("VeinTextureAnimation", fg::PassType::Compute);
+        vein_texture_animation_pass.access(fg::ResourceAccessType::StorageImageOut, animated_vein_texture);
+        vein_texture_animation_pass.execute_func([&](CommandBuffer* cmd, fg::PassContext& ctx) {
+            auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count();
+            float time = now / 1000.0f;
+            // float time = frame_count / 60.0f;
+            cmd->cmd_bind_compute_pipeline(comp_animate_vein);
+            cmd->cmd_bind_descriptor_set(comp_animate_vein, ctx.desc_set, 2);
+            cmd->cmd_push_constant(comp_animate_vein, "t", &time);
             cmd->cmd_dispatch(calc_group_count(512, 16), calc_group_count(512, 16)); // local size 16. Hardcoded 512 for the moment
         });
 
 
-        if (!fg->set_as_backbuffer(tonemapped)) {
+        if (!fg->set_as_backbuffer(ui_overlayed)) {
             return;
         }
 
@@ -519,8 +745,7 @@ public:
         if (!compile_result.first) {
             return;
         }
-        fg_record_inputs = std::move(compile_result.second);
-        // TODO: remember to reset framegraph if you intend to build a different frame
+        fg_record_inputs = compile_result.second; // shouldnt use move. As move does not destroy shared_ptr memory
     }
 
     void init_frame_contexts() {
@@ -546,18 +771,19 @@ public:
     std::shared_ptr<NaiveExpandableDescriptorPool> desc_pool;
 
     PerspectiveCamera cam = PerspectiveCamera(
-        glm::vec3(5.0f, 5.0f, 5.0f),
+        glm::vec3(4.0f, 4.0f, 4.0f),
         glm::vec3(0.0f, 0.0f, 0.0f),
         glm::vec3(0.0f, 1.0f, 0.0f),
         0.05f,
         20.0f,
         glm::radians(60.0f),
-        (float)window_width / (float)window_height);
+        (float)init_window_width / (float)init_window_height);
 
     glm::vec3 light_direction = glm::vec3(10.0f, -5.0f, 5.0f);
 
     // compute pipelines
-    ComputePipeline* comp_animate_texture = nullptr;
+    ComputePipeline* comp_animate_vein = nullptr;
+    ComputePipeline* comp_animate_billow = nullptr;
     ComputePipeline* comp_height_displacement = nullptr;
 
     // objects
@@ -579,7 +805,8 @@ public:
     };
     Object ribbon;
     Object ground;
-    Object screen_quad;
+    Object screen_quad_overlay;
+    Object screen_quad_tonemap;
 
     std::shared_ptr<fg::TransientImageCache> img_allocator;
     std::shared_ptr<fg::TransientBufferCache> buf_allocator;
@@ -598,10 +825,24 @@ public:
     };
     std::vector<FrameContext> frame_ctxs;
 
+    struct ImGuiMesh {
+        otcv::VertexBuffer* vb = nullptr;
+        otcv::Buffer* ib = nullptr;
+    };
+    std::vector<ImGuiMesh> imgui_meshes; // one per frame
+
     uint32_t current_frame = 0;
 
-    const uint32_t FGDescSet = 3;
+    int window_width;
+    int window_height;
+
+    bool framegraph_rebuid = false;
     
+    struct FrameGraphConfig {
+        bool blend = true;
+        bool billow = true;
+    };
+    FrameGraphConfig fg_config;
 };
 
 int main(int argc, char** argv)

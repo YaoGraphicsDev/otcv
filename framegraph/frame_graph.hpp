@@ -1,3 +1,4 @@
+#pragma once
 #include <memory>
 #include <cassert>
 
@@ -39,6 +40,7 @@ enum class ResourceAccessType { // Compatible pass type:
 	SSBOInOut,				// Compute			Buffer	R/W
 
 	VertexIn,				// Graphics			Buffer	R
+	IndexIn,				// Graphics			Buffer	R
 	// Indirect draw
 	IndirectIn,				// Graphics			Buffer	R
 
@@ -111,6 +113,7 @@ private:
 	std::vector<std::pair<ResourceHandle, ResourceHandle>>	_inout_storage_image;
 
 	std::vector<ResourceHandle>								_in_vertices;
+	std::vector<ResourceHandle>								_in_indices;
 	ResourceHandle											_in_indirect = FG_INVALID_HANDLE; // TODO: could have multiple indirect buffers. It is not a one-on-one relationship between indirect buffer and renderpass
 
 	std::vector<ResourceHandle>								_in_transfer;
@@ -170,6 +173,7 @@ struct DAG;
 struct PassContext {
 	DescriptorSet*			desc_set;
 	std::vector<Buffer*>	vertex_bufs;
+	std::vector<Buffer*>	index_bufs;
 	std::vector<Buffer*>	transfer_bufs; // in this order: in, out, target
 	std::vector<Image*>		transfer_imgs; // in this order: in, out, target
 };
@@ -198,7 +202,7 @@ public:
 		Building,
 		Compiled
 	};
-	void reset();
+	// void reset();
 
 	DescriptorPoolBuilder descriptor_pool_capacity() {
 		DescriptorPoolBuilder builder; // build once for each frame

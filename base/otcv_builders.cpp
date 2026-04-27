@@ -1,6 +1,6 @@
 #include "otcv.h"
 #include "otcv_globals.h"
-#include "otcv_utils.h"
+#include "otcv_utils_internal.h"
 
 #include <iostream>
 #include <fstream>

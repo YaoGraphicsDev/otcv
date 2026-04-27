@@ -1,7 +1,7 @@
 #include "otcv.h"
 #include "otcv_globals.h"
 #include "otcv_config.h"
-#include "otcv_utils.h"
+#include "otcv_utils_internal.h"
 
 #include <cassert>
 #include <iostream>
@@ -44,7 +44,7 @@ Instance::~Instance() {
 // Surface
 Surface::Surface(void* window_data) {
 	this->window = window_data;
-#ifdef OTCV_WINDOW == GLFW
+#if OTCV_WINDOW == GLFW
 	if (glfwCreateWindowSurface(g_instance->vk_instance, (GLFWwindow*)window_data, nullptr, &vk_surface) != VK_SUCCESS) {
 		std::cout << "Cannot create window surface" << std::endl;
 		exit(1);
@@ -563,17 +563,18 @@ Swapchain::Swapchain(VkSwapchainCreateInfoKHR info) {
 		image_view_create_info.subresourceRange.levelCount = 1;
 		image_view_create_info.subresourceRange.baseArrayLayer = 0;
 		image_view_create_info.subresourceRange.layerCount = 1;
-		vkCreateImageView(g_device->vk_device, &image_view_create_info, nullptr, &view);
+		VkResult view_result = vkCreateImageView(g_device->vk_device, &image_view_create_info, nullptr, &view);
+		if (view_result != VK_SUCCESS) {
+			std::cout << "Cannot create image view for mock image, error code = " << view_result << std::endl;
+			exit(1);
+		}
 
 		this->views.push_back(view);
 
 		// create mock image
-		Image* mock_image = (Image*)malloc(sizeof(Image));
-		assert(mock_image);
+		Image* mock_image = new Image();
 		mock_image->vk_image = i;
 		mock_image->vk_view = view;
-		mock_image->vk_memory = VK_NULL_HANDLE;
-		new (&mock_image->async_ctx) std::shared_ptr<Image::AsyncPopulateCtx>(nullptr);
 		mock_image->builder._view_info = image_view_create_info;
 		mock_image->builder._image_info = this->image_info;
 
@@ -584,17 +585,131 @@ Swapchain::Swapchain(VkSwapchainCreateInfoKHR info) {
 }
 Swapchain::~Swapchain() {
 	images.clear();
-	for (VkImageView& v : views) {
-		vkDestroyImageView(g_device->vk_device, v, nullptr);
-	}
 	for (Image* mock_image : mock_images) {
-		mock_image->wait_for_async();
-		free(mock_image);
+		// mock_image->wait_for_async(); there is no chance a swapchain image will require async populate
+		assert(!mock_image->async_ctx);
+		mock_image->vk_image = VK_NULL_HANDLE;
+		delete mock_image;
 	}
 	vkDestroySwapchainKHR(g_device->vk_device, vk_swapchain, nullptr);
 }
 Image* Swapchain::mock_image(uint32_t id) {
 	return this->mock_images[id];
+}
+
+void Swapchain::recreate(void* window_data) {
+	VkSurfaceCapabilitiesKHR surface_caps;
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_physical_device.vk_physical_device, g_surface->vk_surface, &surface_caps);
+
+	// Get the window size, measured in pixels
+	// WIDTH and HEIGHT values set at glfw initialization are measured in screen coordinates.
+	// Screen coordinates and pixels may not be the same on MacOS. Very likely to take the same value on Windows.
+	int width_pixels;
+	int height_pixels;
+#if OTCV_WINDOW == GLFW
+	glfwGetFramebufferSize((GLFWwindow*)window_data, &width_pixels, &height_pixels);
+#else
+	std::cout << "Window systems other that glfw not supported" << std::endl;
+	exit(1);
+#endif
+
+	VkExtent2D window_extent;
+	// TODO: windows extent may not be of the exact value as that of window dimensions. Deal with this
+	window_extent.width = std::clamp((uint32_t)width_pixels, surface_caps.minImageExtent.width, surface_caps.maxImageExtent.width);
+	window_extent.height = std::clamp((uint32_t)height_pixels, surface_caps.minImageExtent.height, surface_caps.maxImageExtent.height);
+
+	// update swapchain_info
+	if (surface_caps.maxImageCount == 0) {
+		this->swapchain_info.minImageCount = surface_caps.minImageCount + 1;
+	}
+	else {
+		this->swapchain_info.minImageCount = std::min(surface_caps.minImageCount + 1, surface_caps.maxImageCount);
+	}
+	this->swapchain_info.imageExtent = window_extent;
+	this->swapchain_info.preTransform = surface_caps.currentTransform;
+	/*
+	oldSwapchain provides a deferred mechanism that allows acquired image to be destroyed later even though vkDestroySwapchainKHR is called immediately
+	https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainCreateInfoKHR.html#:~:text=Upon%20calling%20vkCreateSwapchainKHR%20with%20an%20oldSwapchain%20that%20is%20not%20VK_NULL_HANDLE%2C%20any,can%20destroy%20oldSwapchain%20to%20free%20all%20memory%20associated%20with%20oldSwapchain.
+	this field doesn't matter if the main loop waits idle,
+	*/
+	this->swapchain_info.oldSwapchain = vk_swapchain; 
+
+	// update image_info
+	this->image_info.format = this->swapchain_info.imageFormat;
+	this->image_info.extent = { this->swapchain_info.imageExtent.width, this->swapchain_info.imageExtent.height, 1 };
+
+	// destroy views and mock images
+	this->images.clear(); // these images are managed by swapchain
+	this->views.clear();
+	for (Image* mock_image : this->mock_images) {
+		// mock_image->wait_for_async(); there is no chance a swapchain image will require async populate
+		assert(!mock_image->async_ctx);
+		mock_image->vk_image = VK_NULL_HANDLE;
+		delete mock_image;
+	}
+	this->mock_images.clear();
+
+	// recreate swapchain
+	VkSwapchainKHR new_swapchain;
+	VkResult result = vkCreateSwapchainKHR(g_device->vk_device, &swapchain_info, nullptr, &new_swapchain);
+	if (result != VK_SUCCESS) {
+		std::cout << "Cannot create swap chain. Error code = " << result << std::endl;
+		exit(1);
+	}
+	vkDestroySwapchainKHR(g_device->vk_device, this->vk_swapchain, nullptr);
+	this->vk_swapchain = new_swapchain;
+
+	// reacquire swapchain images
+	uint32_t swap_chain_image_count;
+	vkGetSwapchainImagesKHR(g_device->vk_device, vk_swapchain, &swap_chain_image_count, nullptr);
+	if (swap_chain_image_count == 0) {
+		std::cout << "No image acquired from swap chain" << std::endl;
+		exit(1);
+	}
+	std::vector<VkImage> vk_images(swap_chain_image_count);
+	result = vkGetSwapchainImagesKHR(g_device->vk_device, vk_swapchain, &swap_chain_image_count, vk_images.data());
+	if (result != VK_SUCCESS) {
+		std::cout << "Cannot acquire " << swap_chain_image_count << " images from swap chain, error code = " << result << std::endl;
+		exit(1);
+	}
+
+	// recreate images, views and mock_images
+	for (VkImage i : vk_images) {
+		this->images.push_back(i);
+
+		// create view
+		VkImageView view;
+		VkImageViewCreateInfo image_view_create_info{};
+		image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		image_view_create_info.image = i;
+		image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		image_view_create_info.format = this->swapchain_info.imageFormat;
+		image_view_create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+		image_view_create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+		image_view_create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+		image_view_create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+		image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		image_view_create_info.subresourceRange.baseMipLevel = 0;
+		image_view_create_info.subresourceRange.levelCount = 1;
+		image_view_create_info.subresourceRange.baseArrayLayer = 0;
+		image_view_create_info.subresourceRange.layerCount = 1;
+		VkResult view_result = vkCreateImageView(g_device->vk_device, &image_view_create_info, nullptr, &view);
+		if (view_result != VK_SUCCESS) {
+			std::cout << "Cannot create image view for mock image, error code = " << view_result << std::endl;
+			exit(1);
+		}
+
+		this->views.push_back(view);
+
+		// create mock image
+		Image* mock_image = new Image();
+		mock_image->vk_image = i;
+		mock_image->vk_view = view;
+		mock_image->builder._view_info = image_view_create_info;
+		mock_image->builder._image_info = this->image_info;
+
+		this->mock_images.push_back(mock_image);
+	}
 }
 
 // Command pool
@@ -689,7 +804,7 @@ void CommandBuffer::reset(bool release) {
 }
 void CommandBuffer::record(std::function<void(CommandBuffer*)> func, bool one_time) {
 	this->begin(one_time);
-	func(this);
+	if(func) func(this);
 	this->end();
 }
 //void RenderPass::cmd_begin(CommandBuffer* command_buffer, RenderPassBegin& begin) {
@@ -905,7 +1020,7 @@ void Queue::submit(QueueSubmit& info) {
 }
 
 
-void Queue::present(QueuePresent& info) {
+VkResult Queue::present(QueuePresent& info) {
 	VkResult result;
 	VkPresentInfoKHR present_info{};
 	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -917,9 +1032,9 @@ void Queue::present(QueuePresent& info) {
 	present_info.pResults = &result;
 	vkQueuePresentKHR(vk_queue, &present_info);
 	if (result != VK_SUCCESS) {
-		std::cout << "cannot submit to present queue, error code = " << result << std::endl;
-		exit(1);
+		std::cout << "present queue submission failed, error code = " << result << std::endl;
 	}
+	return result;
 }
 
 void Queue::idle_wait() {
@@ -973,8 +1088,11 @@ VertexBuffer::VertexBuffer(VertexBufferBuilder& b, BufferDataUpload upload_optio
 			buffer->populate_async(data, Buffer::SyncType::GPUBarrier, ResourceState::VertexRead, ResourceState::Created);
 		}
 	}
-	b._buffer_builders.clear();
-	b._data_handles.clear();
+	// b._buffer_builders.clear();
+	// b._data_handles.clear();
+	for (const void*& ptr : b._data_handles) {
+		ptr = nullptr;
+	}
 
 	this->builder = std::move(b);
 }

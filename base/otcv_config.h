@@ -6,7 +6,7 @@
 #include <map>
 #include <array>
 
-#define OTCV_WINDOW GLFW;
+#define OTCV_WINDOW GLFW
 
 namespace otcv {
 
