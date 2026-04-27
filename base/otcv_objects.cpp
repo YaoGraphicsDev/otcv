@@ -1240,11 +1240,13 @@ void Image::populate_async(void* data, size_t byte_size,
 
 	cmd_buf->cmd_image_memory_barrier(this, current_state, otcv::ResourceState::TransferDst);
 
+	VkImageAspectFlags image_aspect = builder._view_info.subresourceRange.aspectMask;
+
 	VkBufferImageCopy copy_region{};
 	copy_region.bufferOffset = 0;
 	copy_region.bufferRowLength = 0;
 	copy_region.bufferImageHeight = 0;
-	copy_region.imageSubresource.aspectMask = builder._view_info.subresourceRange.aspectMask;
+	copy_region.imageSubresource.aspectMask = image_aspect;
 	copy_region.imageSubresource.baseArrayLayer = 0;
 	copy_region.imageSubresource.layerCount = 1;
 	copy_region.imageSubresource.mipLevel = 0;
@@ -1260,23 +1262,25 @@ void Image::populate_async(void* data, size_t byte_size,
 		uint32_t base_height = builder._image_info.extent.height;
 		for (uint32_t level = 0; level < builder._image_info.mipLevels - 1; ++level) {
 			// get source level ready
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferDst, ResourceState::TransferSrc, { 0, level, 1, 0, 1 });
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferDst, ResourceState::TransferSrc, { image_aspect, level, 1, 0, 1 });
 			// get dest level ready
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::Created, ResourceState::TransferDst, { 0, level + 1, 1, 0, 1 });
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::Created, ResourceState::TransferDst, { image_aspect, level + 1, 1, 0, 1 });
 			// blit
 			ImageBlit region;
 			region
 				.src_upper_bound(base_width >> level, base_height >> level)
 				.src_mip(level)
+				.src_aspect(image_aspect)
 				.dst_upper_bound(base_width >> (level + 1), base_height >> (level + 1))
-				.dst_mip(level + 1);
+				.dst_mip(level + 1)
+				.dst_aspect(image_aspect);
 			cmd_buf->cmd_image_blit(this, this, region, VK_FILTER_LINEAR);
 			// convert source level to target state
-			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferSrc, target_state, { 0, level, 1, 0, 1 });
+			cmd_buf->cmd_image_memory_barrier(this, ResourceState::TransferSrc, target_state, { image_aspect, level, 1, 0, 1 });
 		}
 	}
 	// convert highest level to target state
-	cmd_buf->cmd_image_memory_barrier(this, otcv::ResourceState::TransferDst, target_state, { 0, builder._image_info.mipLevels - 1, 1, 0, 1 });
+	cmd_buf->cmd_image_memory_barrier(this, otcv::ResourceState::TransferDst, target_state, { image_aspect, builder._image_info.mipLevels - 1, 1, 0, 1 });
 
 	cmd_buf->end();
 
@@ -1938,7 +1942,7 @@ ImageBlit::ImageBlit() {
 	_image_blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	_image_blit.srcSubresource.mipLevel = 0;
 	_image_blit.srcSubresource.baseArrayLayer = 0;
-	_image_blit.srcSubresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
+	_image_blit.srcSubresource.layerCount = 1;
 
 	_image_blit.srcOffsets[0].x = 0;
 	_image_blit.srcOffsets[0].y = 0;
@@ -1951,7 +1955,7 @@ ImageBlit::ImageBlit() {
 	_image_blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	_image_blit.dstSubresource.mipLevel = 0;
 	_image_blit.dstSubresource.baseArrayLayer = 0;
-	_image_blit.dstSubresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
+	_image_blit.dstSubresource.layerCount = 1;
 
 	_image_blit.dstOffsets[0].x = 0;
 	_image_blit.dstOffsets[0].y = 0;
@@ -1981,7 +1985,10 @@ ImageBlit& ImageBlit::src_mip(uint32_t mip) {
 	_image_blit.srcSubresource.mipLevel = mip;
 	return *this;
 }
-
+ImageBlit& ImageBlit::src_layer(uint32_t layer) {
+	_image_blit.srcSubresource.baseArrayLayer = layer;
+	return *this;
+}
 ImageBlit& ImageBlit::dst_upper_bound(int32_t x, int32_t y, int32_t z) {
 	_image_blit.dstOffsets[1].x = x;
 	_image_blit.dstOffsets[1].y = y;
@@ -2002,7 +2009,10 @@ ImageBlit& ImageBlit::dst_mip(uint32_t mip) {
 	_image_blit.dstSubresource.mipLevel = mip;
 	return *this;
 }
-
+ImageBlit& ImageBlit::dst_layer(uint32_t layer) {
+	_image_blit.dstSubresource.baseArrayLayer = layer;
+	return *this;
+}
 ImageCopy::ImageCopy() {
 	_image_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	_image_copy.srcSubresource.mipLevel = 0;

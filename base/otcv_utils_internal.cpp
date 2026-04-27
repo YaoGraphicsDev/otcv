@@ -438,7 +438,11 @@ void transition_image_state(CommandBuffer* command_buffer, const Image* image, R
 	if (sub_range.aspectMask == VK_IMAGE_ASPECT_NONE) {
 		// default image view subresource range
 		barrier.subresourceRange = image->builder._view_info.subresourceRange;
-	}
+		// one caveat to depth stencil image: VUID-VkImageMemoryBarrier-image-03320. Set both depth and stencil aspect mask regardless of either or both aspects get set in image view
+		if ((barrier.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) || (barrier.subresourceRange.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT)) {
+			barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+	}    
 	else {
 		barrier.subresourceRange = sub_range;
 	}

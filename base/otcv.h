@@ -772,11 +772,13 @@ struct ImageBlit {
 	ImageBlit& src_lower_bound(int32_t x, int32_t y, int32_t z = 0);
 	ImageBlit& src_aspect(VkImageAspectFlags aspect);
 	ImageBlit& src_mip(uint32_t mip);
+	ImageBlit& src_layer(uint32_t layer);
 
 	ImageBlit& dst_upper_bound(int32_t x, int32_t y, int32_t z = 1);
 	ImageBlit& dst_lower_bound(int32_t x, int32_t y, int32_t z = 0);
 	ImageBlit& dst_aspect(VkImageAspectFlags aspect);
 	ImageBlit& dst_mip(uint32_t mip);
+	ImageBlit& dst_layer(uint32_t layer);
 
 	VkImageBlit _image_blit = {};
 };
