@@ -13,6 +13,9 @@ public:
 		// we call this desired because glfw framebuffer size, which is the size of swapchain images, may be different from window size
 		int desired_window_width;
 		int desired_window_height;
+		GLFWkeyfun key_cb = nullptr;
+		GLFWcursorposfun cursor_pos_cb = nullptr;
+		void* user_cb_data = nullptr;
 	};
 	Application(const Config& config);
 
@@ -38,12 +41,16 @@ public:
 		return _current_frame;
 	}
 
-	typedef std::function<void(uint32_t)> SyncFrameUpdateFunc;
+	typedef std::function<void(fg::Application*)> SyncFrameUpdateFunc;
 	void synchronized_frame_update(SyncFrameUpdateFunc frame_update) {
 		this->frame_update_cb = frame_update;
 	}
 	
 	typedef std::function<void(fg::Application*)> FGBuildFunc;
+	// this build precedes the first frame update 
+	void framegraph_initial_build(FGBuildFunc fg_build) {
+		this->fg_build_cb = fg_build;
+	}
 	void register_framegraph_rebuild(FGBuildFunc fg_build) {
 		this->fg_build_cb = fg_build;
 		fg_need_rebuild = true;
@@ -52,7 +59,7 @@ public:
 	void run();
 	
 private:
-	void init_window(int width, int height);
+	void init_window(const Config& config);
 	void init_vulkan_context();
 	void init_frame_contexts();
 	void draw_frame();
@@ -61,6 +68,7 @@ private:
 
 	// Boilerplate stuff
 	GLFWwindow* _window = nullptr;
+
 	otcv::Context _otcv_context;
 
 	std::shared_ptr<fg::TransientImageCache> img_allocator = nullptr;

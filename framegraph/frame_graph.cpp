@@ -26,6 +26,7 @@ bool Pass::resource_check(ResourceAccessType access_type, ResourceHandle res_id)
 				{ ResourceAccessType::VertexIn },
 				{ ResourceAccessType::IndexIn },
 				{ ResourceAccessType::IndirectIn },
+				{ ResourceAccessType::SSBOIn }
 			}},
 		}},
 		{ PassType::Compute, {
@@ -134,10 +135,20 @@ bool Pass::access(
 		_fg._v_resources[id1].write = _id;
 	}
 	else if (acc_type == ResourceAccessType::DepthStencilOut) {
+		if (_inout_depth_stencil != std::pair<ResourceHandle, ResourceHandle>({ FG_INVALID_HANDLE, FG_INVALID_HANDLE })) {
+			std::cout << "Pass::resource_access() error: Cannot take another image as depth stencil attachment. resource id = " << id0 << std::endl;
+			assert(false);
+			return false;
+		}
 		_out_depth_stencil = id0;
 		_fg._v_resources[id0].write = _id;
 	}
 	else if (acc_type == ResourceAccessType::DepthStencilInOut) {
+		if (_out_depth_stencil != FG_INVALID_HANDLE) {
+			std::cout << "Pass::resource_access() error: Cannot take another image as depth stencil attachment. resource id = " << id0 << ", id1 = " << id1 << std::endl;
+			assert(false);
+			return false;
+		}
 		_inout_depth_stencil = { id0, id1 };
 		_fg._v_resources[id0].reads.push_back(_id);
 		_fg._v_resources[id1].write = _id;
@@ -177,7 +188,7 @@ bool Pass::access(
 		_fg._v_resources[id0].reads.push_back(_id);
 	}
 	else if (acc_type == ResourceAccessType::IndirectIn) {
-		_in_indirect = id0;
+		_in_indirect.push_back(id0);
 		_fg._v_resources[id0].reads.push_back(_id);
 	}
 	else if (acc_type == ResourceAccessType::TransferIn) {
@@ -301,6 +312,14 @@ ResourceHandle FrameGraph::add_resource(const std::string& name, const BufferBui
 	res.name = name;
 	res.buf_builder = builder;
 	return id;
+}
+
+ImageBuilder FrameGraph::get_img_builder(ResourceHandle v_id) {
+	return _v_resources.at(v_id).img_builder;
+}
+
+BufferBuilder FrameGraph::get_buf_builder(ResourceHandle v_id) {
+	return _v_resources.at(v_id).buf_builder;
 }
 
 bool FrameGraph::set_as_backbuffer(ResourceHandle v_id) {
@@ -428,7 +447,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 		}
 		uint32_t ssbo_count = 0;
 		auto add_ssbo_binding = [&](uint32_t offset) {
-			assert(pass._type == PassType::Compute);
+			assert(pass._type == PassType::Compute || pass._type == PassType::Graphics);
 			auto& b = bindings.emplace_back();
 			b = {};
 			b.binding = SSBOBaseBinding + offset;
@@ -656,14 +675,11 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 		}
 
 		// input indirect
-		{
-			ResourceHandle v = _passes[p]._in_indirect;
-			if (v != FG_INVALID_HANDLE) {
-				if (v2l_map.count(v) == 0) { // some pass has got to have output this buffer before this pass
-					std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
-					assert(false);
-					return { false, {} };
-				}
+		for (ResourceHandle v : _passes[p]._in_indirect) {
+			if (v2l_map.count(v) == 0) { // some pass has got to have output this buffer before this pass
+				std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
+				assert(false);
+				return { false, {} };
 			}
 		}
 
@@ -987,6 +1003,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	}
 
 	// textures. Send into execution lambda through PassContext
+
 	std::vector<CacheEntryHandle> tex_cache_ids;
 	for (ResourceHandle v_id : pass._in_textures) {
 		ResourceHandle p_id = id_v2p(v_id);
@@ -1000,11 +1017,10 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 			tex_ptr->state = ResourceState::FragSample;
 		}
 	}
-	
-	auto& pass_desc_layout = _pass_desc_set_layouts[pass_id];
+
 	// check if texture descriptors need to bind to a difference set of images
 	assert(tex_cache_ids.size() == input.textures.size()); // guaranteed by compile()
-	if(tex_cache_ids != input.textures) {
+	if (tex_cache_ids != input.textures) {
 		// different set of images for textures. Update descriptor set
 		std::vector<Image*> new_textures;
 		for (CacheEntryHandle& id : tex_cache_ids) {
@@ -1014,11 +1030,38 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		std::copy(tex_cache_ids.begin(), tex_cache_ids.end(), input.textures.begin());
 	}
 
+	// SSBOs
+	std::vector<CacheEntryHandle> ssbo_cache_ids;
+	for (ResourceHandle v_id : pass._in_ssbo) {
+		ResourceHandle p_id = id_v2p(v_id);
+		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+		ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
+		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
+
+		// layout transition
+		if (buf_ptr->state != ResourceState::FragSSBORead) {
+			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::FragSSBORead);
+			buf_ptr->state = ResourceState::FragSSBORead;
+		}
+	}
+
+	// check if ssbo descriptors need to bind to a difference set of ssbos
+	assert(ssbo_cache_ids.size() == input.ssbos.size());
+	if (ssbo_cache_ids != input.ssbos) {
+		// different set of images for textures. Update descriptor set
+		std::vector<Buffer*> new_ssbos;
+		for (CacheEntryHandle& id : ssbo_cache_ids) {
+			new_ssbos.push_back(_buf_allocator->storage(id)->resource);
+		}
+		input.desc_set->bind_consecutive_buffers(SSBOBaseBinding, new_ssbos.size(), new_ssbos.data());
+		std::copy(ssbo_cache_ids.begin(), ssbo_cache_ids.end(), input.ssbos.begin());
+	}
+
 	// configure vertex buffers
 	std::vector<CacheEntryHandle> vb_cache_ids;
 	for (ResourceHandle v_id : pass._in_vertices) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
 		vb_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1033,7 +1076,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	std::vector<CacheEntryHandle> ib_cache_ids;
 	for (ResourceHandle v_id : pass._in_indices) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
 		ib_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1041,6 +1084,21 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		if (buf_ptr->state != ResourceState::IndexRead) {
 			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::IndexRead);
 			buf_ptr->state = ResourceState::IndexRead;
+		}
+	}
+
+	// configure indirect buffers
+	std::vector<CacheEntryHandle> idb_cache_ids;
+	for (ResourceHandle v_id : pass._in_indirect) {
+		ResourceHandle p_id = id_v2p(v_id);
+		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+		idb_cache_ids.push_back(_buf_resource_ids[p_id]);
+		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
+
+		// layout transition
+		if (buf_ptr->state != ResourceState::IndirectRead) {
+			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::IndirectRead);
+			buf_ptr->state = ResourceState::IndirectRead;
 		}
 	}
 
@@ -1054,6 +1112,11 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	});
 	p_ctx.index_bufs.reserve(pass._in_indices.size());
 	std::transform(ib_cache_ids.begin(), ib_cache_ids.end(), std::back_inserter(p_ctx.index_bufs),
+		[&](CacheEntryHandle id) {
+		return _buf_allocator->storage(id)->resource;
+	});
+	p_ctx.indirect_bufs.reserve(pass._in_indirect.size());
+	std::transform(idb_cache_ids.begin(), idb_cache_ids.end(), std::back_inserter(p_ctx.indirect_bufs),
 		[&](CacheEntryHandle id) {
 		return _buf_allocator->storage(id)->resource;
 	});
@@ -1194,7 +1257,6 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 
 	// descriptor sets have got to be correctly allocated before this point 
 	assert(matching_layout(input.desc_set, _pass_desc_set_layouts[pass_id].get()));
-	auto& pass_desc_layout = _pass_desc_set_layouts[pass_id];
 
 	CommandBuffer* cmd = input.cmd_buf;
 	cmd->begin();
@@ -1280,7 +1342,7 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 			buf_ptr->state = ResourceState::ComputeSSBO;
 		}
 
-		// check if ssbo descriptors need to bind to a difference set of images
+		// check if ssbo descriptors need to bind to a difference set of ssbos
 		assert(ssbo_cache_ids.size() == input.ssbos.size());
 		if (ssbo_cache_ids != input.ssbos) {
 			// different set of images for textures. Update descriptor set
@@ -1369,7 +1431,6 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 
 	// descriptor sets have got to be correctly allocated before this point 
 	assert(matching_layout(input.desc_set, _pass_desc_set_layouts[pass_id].get()));
-	auto& pass_desc_layout = _pass_desc_set_layouts[pass_id];
 
 	CommandBuffer* cmd = input.cmd_buf;
 	cmd->begin();

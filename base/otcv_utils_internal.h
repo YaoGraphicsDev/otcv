@@ -59,4 +59,6 @@ ShaderModuleBuilder::Uniform& uniform_at(GraphicsPipeline* pipeline, uint16_t se
 
 VertexBuffer* screen_quad_ndc();
 
+VkDeviceSize ubo_alignment();
+
 }

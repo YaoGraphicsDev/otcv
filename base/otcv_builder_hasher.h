@@ -4,6 +4,8 @@
 
 #include <vector>
 
+namespace otcv {
+
 template <typename Con>
 struct SequenceHash {
 	size_t operator()(const Con& container) const {
@@ -16,9 +18,6 @@ struct SequenceHash {
 		return hash;
 	}
 };
-
-namespace otcv {
-namespace fg {
 
 // image hasher
 // excludes name
@@ -85,6 +84,36 @@ struct BufferBuilderLess {
 	}
 };
 
-}
+// graphics pipeline hasher
+struct GraphicsPipelineBuilderSerializer {
+	std::vector<uint8_t> serialized;
+	GraphicsPipelineBuilderSerializer(const GraphicsPipelineBuilder& b);
+	GraphicsPipelineBuilderSerializer() {}
+};
+
+struct GraphicsPipelineBuilderHash {
+	std::size_t operator()(const otcv::GraphicsPipelineBuilder& b) const {
+		GraphicsPipelineBuilderSerializer s(b);
+		SequenceHash<std::vector<uint8_t>> hasher;
+		return hasher(s.serialized);
+	}
+};
+
+struct GraphicsPipelineBuilderEqual {
+	bool operator()(const otcv::GraphicsPipelineBuilder& a, const otcv::GraphicsPipelineBuilder& b) const {
+		GraphicsPipelineBuilderSerializer sa(a);
+		GraphicsPipelineBuilderSerializer sb(b);
+		return sa.serialized == sb.serialized;
+	}
+};
+
+struct GraphicsPipelineBuilderLess {
+	bool operator()(const otcv::GraphicsPipelineBuilder& a, const otcv::GraphicsPipelineBuilder& b) const {
+		GraphicsPipelineBuilderSerializer sa(a);
+		GraphicsPipelineBuilderSerializer sb(b);
+		return sa.serialized < sb.serialized;
+	}
+};
+
 }
 

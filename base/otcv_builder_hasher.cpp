@@ -1,6 +1,8 @@
-#include "builder_hasher.hpp"
+#include "otcv_builder_hasher.h"
 
 #include <cassert>
+
+namespace otcv {
 
 template<typename T>
 inline void serialize_trivial(std::vector<uint8_t>& serialized, T value) {
@@ -20,9 +22,6 @@ inline void serialize_arbitrary(std::vector<uint8_t>& serialized, const void* pt
 	serialized.insert(serialized.end(), start, start + length);
 }
 
-namespace otcv {
-namespace fg{
-
 ImageBuilderSerializer::ImageBuilderSerializer(const ImageBuilder & b) {
 	serialize_trivial(serialized, b._has_mips);
 	assert(!b._image_info.pNext);
@@ -39,5 +38,13 @@ BufferBuilderSerializer::BufferBuilderSerializer(const BufferBuilder& b) {
 	serialize_arbitrary(serialized, &(b._info), sizeof(b._info));
 }
 
+GraphicsPipelineBuilderSerializer::GraphicsPipelineBuilderSerializer(const GraphicsPipelineBuilder& b) {
+	assert(b._pipeline_rendering);
+	const GraphicsPipelineBuilder::PipelineRendering& pr = *b._pipeline_rendering;
+	serialize_arbitrary(serialized, pr._color_attachment_formats.data(), pr._color_attachment_formats.size() * sizeof(VkFormat));
+	serialize_trivial(serialized, &pr._pipeline_rendering.stencilAttachmentFormat);
+	assert(false);
+	// graphics pipeline serialization is too complicated
+	// serialize_arbitrary(serialized, &b._vertex_state.)
 }
 }

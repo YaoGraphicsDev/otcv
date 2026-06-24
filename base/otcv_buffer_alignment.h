@@ -115,6 +115,7 @@ struct StaticUBOArray {
 	Std140AlignmentType _layout;
 };
 
+// Only supports copy-in at initialization. Synchronous write.
 struct SSBO {
 	SSBO(const Std430AlignmentType& layout, uint32_t n_ssbo, VkBufferUsageFlags additional_usage = 0);
 	~SSBO();
@@ -134,9 +135,59 @@ struct SSBO {
 	Std430AlignmentType::Range range_of(uint32_t id, SSBOAccess& acc);
 
 	uint32_t _stride;
-	uint32_t _n_ubos;
+	uint32_t _n_ssbos;
 	otcv::Buffer* _buf;
 	std::vector<uint8_t> _staging_buf;
+	Std430AlignmentType _layout;
+};
+
+/*
+* Supports writing through a staging buffer and copy commands.Requires a command buffer as input parameter.
+* Best of both (StaticUBOArray & SSBO) world:, 
+*	1. Can be updated through mapped memory on host
+*	2. Offer device local fast memory access
+*	3. No UBO limitation, does not assume dynamically uniform access
+* Only downside being the copy command
+*/
+struct StagedWriteSSBO {
+	StagedWriteSSBO(const Std430AlignmentType& layout, uint32_t n_ssbo, VkBufferUsageFlags additional_usage = 0);
+	~StagedWriteSSBO();
+
+	void set(uint32_t ssbo_id, SSBOAccess& access, const void* value);
+
+	void push_staging_commands(
+		CommandBuffer& cmd_buf,
+		ResourceState source_state,
+		ResourceState target_state);
+
+	Std430AlignmentType::Range range_of(uint32_t id, SSBOAccess& acc);
+
+	uint32_t _stride;
+	uint32_t _n_ssbos;
+	Buffer*	_buf;
+	Buffer*	_staging_buf;
+	Std430AlignmentType _layout;
+};
+
+struct SSBOLayout {
+	SSBOLayout() {};
+
+	SSBOLayout(const Std430AlignmentType& layout, uint32_t n_ssbo);
+
+	struct WriteContext {
+		uint32_t id;
+		struct AccessContext {
+			SSBOAccess acc;
+			const void* value;
+		};
+		std::vector<AccessContext> access_ctxs;
+	};
+
+	Std430AlignmentType::Range range_of(uint32_t id, SSBOAccess& acc);
+
+	uint32_t _stride;
+	uint32_t _n_ssbos;
+	otcv::BufferBuilder _builder;
 	Std430AlignmentType _layout;
 };
 

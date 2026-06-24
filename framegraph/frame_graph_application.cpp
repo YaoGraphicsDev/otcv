@@ -13,7 +13,7 @@ namespace otcv {
 namespace fg {
 
 Application::Application(const Config& config) {
-    init_window(config.desired_window_width, config.desired_window_height);
+    init_window(config);
     init_vulkan_context();
     init_frame_contexts();
 }
@@ -37,13 +37,22 @@ void window_iconified_callback(GLFWwindow* window, int iconified) {
     }
 }
 
-void Application::init_window(int width, int height) {
+void Application::init_window(const Config& config) {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    _window = glfwCreateWindow(width, height, "Framegraph Demo", nullptr, nullptr);
-    glfwSetWindowUserPointer(_window, this);
+    _window = glfwCreateWindow(config.desired_window_width, config.desired_window_height, "Framegraph Demo", nullptr, nullptr);
+    
+    if (config.user_cb_data) {
+        glfwSetWindowUserPointer(_window, config.user_cb_data);
+    }
+    if (config.key_cb) {
+        glfwSetKeyCallback(_window, config.key_cb);
+    }
+    if (config.cursor_pos_cb) {
+        glfwSetCursorPosCallback(_window, config.cursor_pos_cb);
+    }
 
     // handle minimize/restore events
     glfwSetWindowIconifyCallback(_window, window_iconified_callback);
@@ -68,6 +77,9 @@ void Application::init_frame_contexts() {
 }
 
 void Application::run() {
+    if (fg_build_cb) { // user has set an initial build functions
+        build_framegraph();
+    }
     while (!glfwWindowShouldClose(_window)) {
         glfwPollEvents();
         if (!window_minimized) {
@@ -105,7 +117,7 @@ void Application::draw_frame() {
     f.frame_fence->wait();
 
     if (frame_update_cb) {
-        frame_update_cb(_current_frame);
+        frame_update_cb(this);
     }
 
     if (fg_need_rebuild) {

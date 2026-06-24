@@ -81,6 +81,7 @@ enum class ResourceState {
 	TransferDst,
 
 	ComputeSSBORead,
+	FragSSBORead,
 	ComputeSSBOWrite,
 	ComputeSSBO, // Read & Write
 
@@ -134,6 +135,7 @@ struct VertexBuffer;
 struct DescriptorSet;
 struct ImageBlit;
 struct ImageCopy;
+struct PipelineLayout;
 struct CommandBuffer {
 	CommandBuffer(VkCommandBufferAllocateInfo&);
 	~CommandBuffer();
@@ -163,9 +165,16 @@ struct CommandBuffer {
 	void cmd_set_scissor(float width, float height,
 		float x = 0.0f, float y = 0.0f);
 
+	void cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data);
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
+	void cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data);
+
 	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+	void cmd_bind_graphics_descriptor_set(PipelineLayout* layout, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+
 	void cmd_bind_descriptor_set(ComputePipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+	void cmd_bind_compute_descriptor_set(PipelineLayout* layout, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
+
 	void cmd_draw(uint32_t vertex_count,
 		uint32_t instance_count = 1,
 		uint32_t first_vertex = 0,
@@ -181,10 +190,14 @@ struct CommandBuffer {
 		VkDeviceSize counts_offset,
 		uint32_t max_draw,
 		uint32_t commands_stride);
+	void cmd_draw_indexed_indirect(Buffer* commands,
+		VkDeviceSize offset,
+		uint32_t draw_count,
+		uint32_t stride);
+
 
 	// compute pipeline commands
 	void cmd_bind_compute_pipeline(ComputePipeline* pipeline);
-	void cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data);
 	void cmd_dispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z = 1);
 
 	// blit & copy commands
@@ -399,7 +412,7 @@ struct Image {
 	};
 	// images that does not require explicit cpu wait are expected to go into render/compute pipelines later,
 	// synchronized on the GPU side with image memory barrier
-	void populate_async(void* data, size_t byte_size, 
+	void populate_async(const void* data, size_t byte_size, 
 		ResourceState target_state, ResourceState current_state = ResourceState::Created, SyncType sync_type = SyncType::CPUWait);
 
 	void initialize_state_async(ResourceState target_state, ResourceState current_state = ResourceState::Created, SyncType sync_type = SyncType::CPUWait);
@@ -742,8 +755,7 @@ struct GraphicsPipeline {
 	void destroy();
 
 	void cmd_bind(CommandBuffer* cmd_buffer);
-	// void cmd_bind_descriptor_set(CommandBuffer* cmd_buffer, DescriptorSet* set);
-	// void cmd_push_constant(CommandBuffer* cmd_buffer, const void* data, VkShaderStageFlags stage);
+
 	VkPipeline vk_pipeline;
 	std::vector<DescriptorSetLayout*> desc_set_layouts;
 	PipelineLayout* pipeline_layout;
@@ -786,7 +798,12 @@ struct ImageBlit {
 // copy
 struct ImageCopy {
 	ImageCopy();
+
+	ImageCopy& src_layer(uint32_t base_layer, uint32_t layer_count = 1);
+	ImageCopy& dst_layer(uint32_t base_layer, uint32_t layer_count = 1);
+
 	ImageCopy& extent(uint32_t width, uint32_t height, uint32_t depth = 1);
+	ImageCopy& extent(VkExtent3D extent);
 
 	ImageCopy& src_offset(int32_t x, int32_t y, int32_t z = 0);
 	ImageCopy& dst_offset(int32_t x, int32_t y, int32_t z = 0);

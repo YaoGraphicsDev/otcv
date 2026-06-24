@@ -176,6 +176,7 @@ void create_device() {
     VkPhysicalDeviceFeatures device_feature{};
     device_feature.samplerAnisotropy = VK_TRUE;
     device_feature.fillModeNonSolid = VK_TRUE;
+    device_feature.multiDrawIndirect = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features v11_feature{};
     v11_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;

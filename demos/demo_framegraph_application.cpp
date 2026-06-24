@@ -284,17 +284,18 @@ int main() {
     fg_config.blend = true;
     fg_config.billow = true;
 
-	auto frame_update = [&](uint32_t frame_index) {
-		uint32_t width = fg_app->otcv_context().swapchain->image_info.extent.width;
-		uint32_t height = fg_app->otcv_context().swapchain->image_info.extent.height;
+	auto frame_update = [&](fg::Application* app) {
+		uint32_t width = app->otcv_context().swapchain->image_info.extent.width;
+		uint32_t height = app->otcv_context().swapchain->image_info.extent.height;
 		util_objs->update_camera(width, height);
 
 		immediate_gui(fg_config);
 
 		if (fg_config.rebuild) {
-			fg_app->register_framegraph_rebuild(std::bind(configure_framegraph, std::placeholders::_1, util_objs, fg_config));
+			app->register_framegraph_rebuild(std::bind(configure_framegraph, std::placeholders::_1, util_objs, fg_config));
 		}
 
+        uint32_t frame_index = app->current_frame();
 		ImGui_ImplOTCV_BuildBuffers(util_objs->imgui_meshes[frame_index].vb, util_objs->imgui_meshes[frame_index].ib);
 	};
 

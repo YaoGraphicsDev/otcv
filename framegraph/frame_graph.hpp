@@ -22,7 +22,7 @@ const VkImageSubresourceRange FG_IMAGE_NULL_RANGE = {
 class FrameGraph;
 struct PassContext;
 
-enum class ResourceAccessType { // Compatible pass type:
+enum class ResourceAccessType { // Compatible pass type: *access types marked with Graphics are exclusive to fragment shader stage
 	TextureIn = 0,			// Graphics/Compute	Image	R
 	ColorOut,				// Graphics			Image	W
 	ColorInOut,				// Graphics			Image	R/W
@@ -35,7 +35,7 @@ enum class ResourceAccessType { // Compatible pass type:
 	StorageImageOut,		// Compute			Image	W
 	StorageImageInOut,		// Compute			Image	R/W
 
-	SSBOIn,					// Compute			Buffer	R
+	SSBOIn,					// Compute/Graphics	Buffer	R
 	SSBOOut,				// Compute			Buffer	W
 	SSBOInOut,				// Compute			Buffer	R/W
 
@@ -114,7 +114,7 @@ private:
 
 	std::vector<ResourceHandle>								_in_vertices;
 	std::vector<ResourceHandle>								_in_indices;
-	ResourceHandle											_in_indirect = FG_INVALID_HANDLE; // TODO: could have multiple indirect buffers. It is not a one-on-one relationship between indirect buffer and renderpass
+	std::vector<ResourceHandle>								_in_indirect;
 
 	std::vector<ResourceHandle>								_in_transfer;
 	std::vector<ResourceHandle>								_out_transfer;
@@ -176,6 +176,7 @@ struct PassContext {
 	std::vector<Buffer*>	index_bufs;
 	std::vector<Buffer*>	transfer_bufs; // in this order: in, out, target
 	std::vector<Image*>		transfer_imgs; // in this order: in, out, target
+	std::vector<Buffer*>	indirect_bufs;
 };
 
 class FrameGraph {
@@ -204,22 +205,26 @@ public:
 	};
 	// void reset();
 
-	DescriptorPoolBuilder descriptor_pool_capacity() {
-		DescriptorPoolBuilder builder; // build once for each frame
-		builder
-			.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTexturesPerPass * maxPasses * 2) // graphics and compute
-			.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, maxSSBOsPerPass * maxPasses) // compute exclusive 
-			.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, maxStorageImagesPerPass * maxPasses); // compute exclusive
-		builder.descriptor_set_capacity(maxPasses * 2);
-		builder.descriptor_set_freeable(false);
-		return builder;
-	}
+	//DescriptorPoolBuilder descriptor_pool_capacity() {
+	//	DescriptorPoolBuilder builder; // build once for each frame
+	//	builder
+	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTexturesPerPass * maxPasses * 2) // graphics and compute
+	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, maxSSBOsPerPass * maxPasses * 2) // graphics and compute
+	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, maxStorageImagesPerPass * maxPasses); // compute exclusive
+	//	builder.descriptor_set_capacity(maxPasses * 2);
+	//	builder.descriptor_set_freeable(false);
+	//	return builder;
+	//}
 
 	Pass& add_pass(const std::string& name, PassType type);
 
 	ResourceHandle add_resource(const std::string& name, const ImageBuilder& builder);
 
 	ResourceHandle add_resource(const std::string& name, const BufferBuilder& builder);
+
+	ImageBuilder get_img_builder(ResourceHandle v_id);
+
+	BufferBuilder get_buf_builder(ResourceHandle v_id);
 
 	// set a virtual resource as backbuffer
 	// has to be an image

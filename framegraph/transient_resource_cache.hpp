@@ -6,7 +6,7 @@
 #include <unordered_map>
 
 #include "otcv.h"
-#include "builder_hasher.hpp"
+#include "otcv_builder_hasher.h"
 
 namespace otcv {
 namespace fg {

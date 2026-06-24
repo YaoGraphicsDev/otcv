@@ -42,6 +42,11 @@ if (OTCV_ENABLE_SHADER_TOOL)
     else()
         message(STATUS "OTCV_SPIRV_OUT_PATH=${OTCV_SPIRV_OUT_PATH}")
     endif()
+    if (NOT OTCV_GLSL_REFLECT_HEADER_OUT_PATH)
+        message(FATAL_ERROR "OTCV_GLSL_REFLECT_HEADER_OUT_PATH not provided")
+    else()
+        message(STATUS "OTCV_GLSL_REFLECT_HEADER_OUT_PATH=${OTCV_GLSL_REFLECT_HEADER_OUT_PATH}")
+    endif()
 else()
     message(STATUS "OTCV_ENABLE_COMPILE_SHADER -- OFF")
 endif()
@@ -72,9 +77,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
 #find_package(spirv_cross_c_shared REQUIRED)
-
-set(OTCV_CMAKE_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" CACHE PATH "")
-message(STATUS "OTCV_CMAKE_INCLUDE_PATH=${OTCV_CMAKE_INCLUDE_PATH}")
 
 # base
 add_subdirectory("base")

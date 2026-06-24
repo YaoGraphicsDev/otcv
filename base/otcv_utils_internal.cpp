@@ -621,6 +621,10 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		src_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	}
+	else if (from_state == ResourceState::FragSSBORead) {
+		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		src_stage_mask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	}
 	else if (from_state == ResourceState::ComputeSSBOWrite || from_state == ResourceState::ComputeSSBO) {
 		barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 		src_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -658,6 +662,10 @@ void transition_buffer_state(CommandBuffer* command_buffer, const Buffer* buffer
 	else if (to_state == ResourceState::ComputeSSBORead) {
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		dst_stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	}
+	else if (to_state == ResourceState::FragSSBORead) {
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		dst_stage_mask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 	}
 	else if (to_state == ResourceState::ComputeSSBO) {
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -743,5 +751,12 @@ VertexBuffer* screen_quad_ndc() {
 	return vb;
 }
 
+VkDeviceSize ubo_alignment() {
+	VkPhysicalDeviceProperties device_properties;
+	vkGetPhysicalDeviceProperties(otcv::get_context().physical_device->vk_physical_device, &device_properties);
+	VkPhysicalDeviceLimits limits = device_properties.limits;
+	VkDeviceSize ubo_alignment = limits.minUniformBufferOffsetAlignment;
+	return ubo_alignment;
+}
 
 }

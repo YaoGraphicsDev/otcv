@@ -1,14 +1,25 @@
 set(OTCV_SHADER_TOOL "OTCVShaderTool" CACHE INTERNAL "")
-file(MAKE_DIRECTORY ${OTCV_SPIRV_OUT_PATH})
-message(STATUS "CMAKE_CURRENT_SOURCE_DIR = ${CMAKE_CURRENT_SOURCE_DIR}")
 
-file(GLOB_RECURSE SHADER_FILES "${OTCV_GLSL_IN_PATH}/*.*")
+file(MAKE_DIRECTORY "${OTCV_SPIRV_OUT_PATH}")
+file(MAKE_DIRECTORY "${OTCV_GLSL_REFLECT_HEADER_OUT_PATH}")
 
-include(${OTCV_CMAKE_INCLUDE_PATH}/shader_compile.cmake)
-compile_shaders("${OTCV_GLSL_IN_PATH}" "${OTCV_SPIRV_OUT_PATH}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_compile.cmake")
 
-# Create a custom target for compiling shaders
+compile_shaders(
+    "${OTCV_GLSL_IN_PATH}"
+    "${OTCV_SPIRV_OUT_PATH}"
+    "${OTCV_GLSL_INCLUDE_PATH}"
+    "${OTCV_GLSL_REFLECT_HEADER_OUT_PATH}"
+)
+
 add_custom_target(
     ${OTCV_SHADER_TOOL} ALL
-    DEPENDS ${SPIRV_FILES}
-    SOURCES ${SHADER_FILES})
+    DEPENDS
+        ${SPIRV_FILES}
+        ${REFLECT_FILES}
+        ${CPP_REFLECT_FILES}
+    SOURCES
+        ${SHADER_FILES}
+        ${SHADER_INCLUDE_FILES}
+        ${CPP_REFLECT_FILES}
+)

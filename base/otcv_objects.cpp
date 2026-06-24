@@ -174,6 +174,13 @@ DescriptorSet::~DescriptorSet() {
 	}
 }
 void DescriptorSet::bind_image_sampler(uint32_t binding, Image** p_images, Sampler** p_samplers, uint32_t array_start, uint32_t array_count) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for image sampler" << std::endl;
+		assert(false);
+		return;
+	}
+
 	std::vector<VkDescriptorImageInfo> image_infos(array_count);
 	for (uint32_t i = 0; i < array_count; ++i) {
 		VkDescriptorImageInfo image_info{};
@@ -183,7 +190,7 @@ void DescriptorSet::bind_image_sampler(uint32_t binding, Image** p_images, Sampl
 		image_infos[i] = image_info;
 	}
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -191,12 +198,19 @@ void DescriptorSet::bind_image_sampler(uint32_t binding, Image** p_images, Sampl
 	write.dstBinding = binding;
 	write.dstArrayElement = array_start;
 	write.descriptorCount = array_count;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pImageInfo = image_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 void DescriptorSet::bind_storage_image(uint32_t binding, Image** p_images, uint32_t array_start, uint32_t array_count) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for storage image" << std::endl;
+		assert(false);
+		return;
+	}
+
 	std::vector<VkDescriptorImageInfo> image_infos(array_count);
 	for (uint32_t i = 0; i < array_count; ++i) {
 		VkDescriptorImageInfo image_info{};
@@ -206,7 +220,7 @@ void DescriptorSet::bind_storage_image(uint32_t binding, Image** p_images, uint3
 		image_infos[i] = image_info;
 	}
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -214,13 +228,20 @@ void DescriptorSet::bind_storage_image(uint32_t binding, Image** p_images, uint3
 	write.dstBinding = binding;
 	write.dstArrayElement = array_start;
 	write.descriptorCount = array_count;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pImageInfo = image_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 
 void DescriptorSet::bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_t array_start, uint32_t array_count) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for sampler" << std::endl;
+		assert(false);
+		return;
+	}
+
 	std::vector<VkDescriptorImageInfo> image_infos(array_count);
 	for (uint32_t i = 0; i < array_count; ++i) {
 		VkDescriptorImageInfo image_info{};
@@ -230,7 +251,7 @@ void DescriptorSet::bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_
 		image_infos[i] = image_info;
 	}
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -238,13 +259,20 @@ void DescriptorSet::bind_sampler(uint32_t binding, Sampler** p_samplers, uint32_
 	write.dstBinding = binding;
 	write.dstArrayElement = array_start;
 	write.descriptorCount = array_count;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pImageInfo = image_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 
 void DescriptorSet::bind_sampled_image(uint32_t binding, Image** p_images, uint32_t array_start, uint32_t array_count) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for sampler" << std::endl;
+		assert(false);
+		return;
+	}
+
 	std::vector<VkDescriptorImageInfo> image_infos(array_count);
 	for (uint32_t i = 0; i < array_count; ++i) {
 		VkDescriptorImageInfo image_info{};
@@ -254,7 +282,7 @@ void DescriptorSet::bind_sampled_image(uint32_t binding, Image** p_images, uint3
 		image_infos[i] = image_info;
 	}
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -262,21 +290,28 @@ void DescriptorSet::bind_sampled_image(uint32_t binding, Image** p_images, uint3
 	write.dstBinding = binding;
 	write.dstArrayElement = array_start;
 	write.descriptorCount = array_count;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pImageInfo = image_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 
 void DescriptorSet::bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize range) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for sampler" << std::endl;
+		assert(false);
+		return;
+	}
+
 	VkDescriptorBufferInfo buffer_info{};
 	buffer_info.buffer = buffer->vk_buffer;
 	buffer_info.offset = offset;
 	buffer_info.range = range;
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-		bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
-		bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+		iter->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+		iter->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -284,13 +319,20 @@ void DescriptorSet::bind_buffer(uint32_t binding, Buffer* buffer, VkDeviceSize o
 	write.dstBinding = binding;
 	write.dstArrayElement = 0;
 	write.descriptorCount = 1;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pBufferInfo = &buffer_info;
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
 }
 
 void DescriptorSet::bind_buffer_array(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize stride, uint32_t count) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for sampler" << std::endl;
+		assert(false);
+		return;
+	}
+
 	std::vector<VkDescriptorBufferInfo> buffer_infos(count);
 	for (uint32_t i = 0; i < count; ++i) {
 		buffer_infos[i].buffer = buffer->vk_buffer;
@@ -298,7 +340,7 @@ void DescriptorSet::bind_buffer_array(uint32_t binding, Buffer* buffer, VkDevice
 		buffer_infos[i].range = stride;
 	}
 
-	assert(bindings[binding].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
 	VkWriteDescriptorSet write{};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -306,7 +348,7 @@ void DescriptorSet::bind_buffer_array(uint32_t binding, Buffer* buffer, VkDevice
 	write.dstBinding = binding;
 	write.dstArrayElement = 0;
 	write.descriptorCount = count;
-	write.descriptorType = bindings[binding].descriptorType;
+	write.descriptorType = iter->descriptorType;
 	write.pBufferInfo = buffer_infos.data();
 
 	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
@@ -887,46 +929,46 @@ void CommandBuffer::cmd_set_scissor(float width, float height, float x, float y)
 	VkRect2D scissor{ {x, y}, {width, height} };
 	vkCmdSetScissor(this->vk_command_buffer, 0, 1, &scissor);
 }
-void CommandBuffer::cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data) {
-	auto iter = pipeline->pipeline_layout->push_consts.find(name);
-	if (iter == pipeline->pipeline_layout->push_consts.end()) {
+void CommandBuffer::cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data) {
+	auto iter = layout->push_consts.find(name);
+	if (iter == layout->push_consts.end()) {
 		return;
 	}
 	VkPushConstantRange& range = iter->second;
 
-	for (auto& member : pipeline->pipeline_layout->push_consts) {
+	for (auto& member : layout->push_consts) {
 		vkCmdPushConstants(this->vk_command_buffer,
-			pipeline->pipeline_layout->vk_pipeline_layout,
+			layout->vk_pipeline_layout,
 			range.stageFlags,
 			range.offset,
 			range.size,
 			data);
 	}
 }
+void CommandBuffer::cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data) {
+	cmd_push_constant(pipeline->pipeline_layout, name, data);
+}
 void CommandBuffer::cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data) {
-	auto iter = pipeline->pipeline_layout->push_consts.find(name);
-	if (iter == pipeline->pipeline_layout->push_consts.end()) {
-		return;
-	}
-	VkPushConstantRange& range = iter->second;
-
-	for (auto& member : pipeline->pipeline_layout->push_consts) {
-		vkCmdPushConstants(this->vk_command_buffer,
-			pipeline->pipeline_layout->vk_pipeline_layout,
-			range.stageFlags,
-			range.offset,
-			range.size,
-			data);
-	}
+	cmd_push_constant(pipeline->pipeline_layout, name, data);
 }
 void CommandBuffer::cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
 	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
 		dynamic_offsets.size(), dynamic_offsets.data());
 }
+void CommandBuffer::cmd_bind_graphics_descriptor_set(PipelineLayout* layout, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
+	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
+		dynamic_offsets.size(), dynamic_offsets.data());
+}
 void CommandBuffer::cmd_bind_descriptor_set(ComputePipeline* pipeline, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
 	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 		pipeline->pipeline_layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
+		dynamic_offsets.size(), dynamic_offsets.data());
+}
+void CommandBuffer::cmd_bind_compute_descriptor_set(PipelineLayout* layout, DescriptorSet* set, uint32_t target_set, std::vector<uint32_t> dynamic_offsets) {
+	vkCmdBindDescriptorSets(this->vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+		layout->vk_pipeline_layout, target_set, 1, &(set->vk_desc_set),
 		dynamic_offsets.size(), dynamic_offsets.data());
 }
 void CommandBuffer::cmd_draw(uint32_t vertex_count,
@@ -956,6 +998,16 @@ void CommandBuffer::cmd_draw_indexed_indirect_count(
 		count_offset,
 		max_draw,
 		commands_stride);
+}
+void CommandBuffer::cmd_draw_indexed_indirect(Buffer* commands,
+	VkDeviceSize offset,
+	uint32_t draw_count,
+	uint32_t stride) {
+	vkCmdDrawIndexedIndirect(vk_command_buffer,
+		commands->vk_buffer,
+		offset,
+		draw_count,
+		stride);
 }
 void CommandBuffer::cmd_dispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
 	vkCmdDispatch(vk_command_buffer,
@@ -1212,7 +1264,7 @@ void Image::destroy() {
 	std::shared_ptr<Image> ptr(std::shared_ptr<Image>(), this);
 	g_user_images.erase(ptr);
 }
-void Image::populate_async(void* data, size_t byte_size, 
+void Image::populate_async(const void* data, size_t byte_size, 
 	ResourceState target_state, ResourceState current_state, SyncType sync_type) {
 	assert(builder._image_info.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 
@@ -1658,8 +1710,9 @@ PipelineLayout::PipelineLayout(const std::vector<DescriptorSetLayout*>& set_layo
 
 		if (iter != ranges.end()) {
 			// found range with the same stage flag, merge
+			uint32_t end = std::max(iter->offset + iter->size, range.offset + range.size);
 			iter->offset = std::min(range.offset, iter->offset);
-			iter->size = std::max(iter->offset + iter->size, range.offset + range.size) - iter->offset;
+			iter->size = end - iter->offset;
 		}
 		else {
 			ranges.insert(iter, range);
@@ -2031,8 +2084,24 @@ ImageCopy::ImageCopy() {
 	_image_copy.extent = { 0, 0, 0 };
 }
 
+ImageCopy& ImageCopy::src_layer(uint32_t base_layer, uint32_t layer_count) {
+	_image_copy.srcSubresource.baseArrayLayer = base_layer;
+	_image_copy.srcSubresource.layerCount = layer_count;
+	return *this;
+}
+ImageCopy& ImageCopy::dst_layer(uint32_t base_layer, uint32_t layer_count) {
+	_image_copy.dstSubresource.baseArrayLayer = base_layer;
+	_image_copy.dstSubresource.layerCount = layer_count;
+	return *this;
+}
+
 ImageCopy& ImageCopy::extent(uint32_t width, uint32_t height, uint32_t depth) {
 	_image_copy.extent = { width, height, depth };
+	return *this;
+}
+
+ImageCopy& ImageCopy::extent(VkExtent3D extent) {
+	_image_copy.extent = extent;
 	return *this;
 }
 
