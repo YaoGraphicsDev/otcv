@@ -21,5 +21,4 @@ add_custom_target(
     SOURCES
         ${SHADER_FILES}
         ${SHADER_INCLUDE_FILES}
-        ${CPP_REFLECT_FILES}
 )

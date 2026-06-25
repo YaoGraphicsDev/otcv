@@ -313,7 +313,7 @@ void create_swapchain(void* window_data) {
         create_info.minImageCount = surface_caps.minImageCount + 1;
     }
     else {
-        create_info.minImageCount = std::min(surface_caps.minImageCount + 1, surface_caps.maxImageCount);
+        create_info.minImageCount = std::max(surface_caps.minImageCount, uint32_t(2));// std::min(surface_caps.minImageCount + 1, surface_caps.maxImageCount);
     }
     create_info.imageFormat = surface_format.format;
     create_info.imageColorSpace = surface_format.colorSpace;
