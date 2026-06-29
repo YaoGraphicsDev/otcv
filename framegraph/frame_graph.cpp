@@ -248,27 +248,6 @@ FrameGraph::FrameGraph(
 FrameGraph::~FrameGraph() {
 }
 
-//void FrameGraph::reset() {
-//	// TODO: deal with descriptor and pool
-//	// reset this frame's descriptor pool?
-//	assert(false);
-//	// TODO: pass in FrameRecordInput and reset descriptor pool here
-//
-//	_dag->clear();
-//	_img_allocator = nullptr;
-//	_buf_allocator = nullptr;
-//	_passes.clear();
-//	_sorted_passes.clear();
-//
-//	_v_resources.clear();
-//	_l_resources.clear();
-//	_img_resource_ids.clear();
-//	_buf_resource_ids.clear();
-//
-//	_backbuffer_id = FG_INVALID_HANDLE;
-//	_state = State::Building;
-//}
-
 Pass& FrameGraph::add_pass(const std::string& name, PassType type) {
 	if (_state != State::Building) {
 		std::cout << "FrameGraph::add_pass() error: reset graph before building" << std::endl;
@@ -358,8 +337,6 @@ PhysicalImagePtr FrameGraph::backbuffer() {
 }
 
 std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
-	// std::vector<CommandPool*> frame_command_pools,
-	// std::vector<DescriptorPool*> frame_desc_pools,
 	uint32_t n_frames,
 	ResourceState additional_backbuffer_usage) {
 	if (_state == State::Compiled) {
@@ -507,7 +484,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 
 	// Merge virtual resources into logical resources
 	std::map<ResourceHandle, ResourceHandle> v2l_map; // virtual -> logical
-	std::vector<std::vector<PassHandle>> l2v_list; // logical -> virtual
+	std::vector<std::vector<ResourceHandle>> l2v_list; // logical -> virtual
 
 	auto new_logical_resource = [&](ResourceHandle v) -> bool {
 		if (v == FG_INVALID_HANDLE) {
@@ -742,7 +719,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			assert(false);
 		}
 	};
-	
+
 	// set up logical resources
 	std::ostringstream oss;
 	for (ResourceHandle i = 0; i < l2v_list.size(); ++i) {
@@ -925,8 +902,8 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			return _l_resources[a].life_begin < _l_resources[b].life_begin;
 		});
 
-		uint32_t global_physical_image_count = 0;
-		uint32_t global_physical_buffer_count = 0;
+		uint32_t n_physical_images = 0;
+		uint32_t n_physical_buffers = 0;
 		for (uint32_t id : sorted_indices) {
 			LogicalResource& r = _l_resources[id];
 			if (r.type == ResourceType::Image) {
@@ -946,7 +923,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 				}
 				else {
 					// no available resource finished before we started
-					uint32_t new_id = global_physical_image_count++;
+					uint32_t new_id = n_physical_images++;
 					pool.insert({ r.life_end, new_id });
 					r.physical_id = new_id;
 				}
@@ -968,7 +945,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 				}
 				else {
 					// no available resource finished before we started
-					uint32_t new_id = global_physical_buffer_count++;
+					uint32_t new_id = n_physical_buffers++;
 					pool.insert({ r.life_end, new_id });
 					r.physical_id = new_id;
 				}
@@ -979,8 +956,8 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			}
 		}
 		
-		_img_resource_ids.resize(global_physical_image_count, FG_INVALID_HANDLE);
-		_buf_resource_ids.resize(global_physical_buffer_count, FG_INVALID_HANDLE);
+		_img_resource_ids.resize(n_physical_images, FG_INVALID_HANDLE);
+		_buf_resource_ids.resize(n_physical_buffers, FG_INVALID_HANDLE);
 	}
 
 	_state = State::Compiled;

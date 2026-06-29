@@ -203,18 +203,6 @@ public:
 		Building,
 		Compiled
 	};
-	// void reset();
-
-	//DescriptorPoolBuilder descriptor_pool_capacity() {
-	//	DescriptorPoolBuilder builder; // build once for each frame
-	//	builder
-	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTexturesPerPass * maxPasses * 2) // graphics and compute
-	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, maxSSBOsPerPass * maxPasses * 2) // graphics and compute
-	//		.descriptor_type_capacity(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, maxStorageImagesPerPass * maxPasses); // compute exclusive
-	//	builder.descriptor_set_capacity(maxPasses * 2);
-	//	builder.descriptor_set_freeable(false);
-	//	return builder;
-	//}
 
 	Pass& add_pass(const std::string& name, PassType type);
 

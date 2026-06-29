@@ -213,6 +213,9 @@ struct CommandBuffer {
 	
 	void cmd_image_copy(Image* src, Image* dst, ImageCopy& region);
 
+	// records multiple copy commands. Same number as mip levels
+	void cmds_image_full_copy(Image* src, Image* dst, VkImageAspectFlags aspect);
+
 	void cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
 
 	VkCommandBuffer vk_command_buffer = VK_NULL_HANDLE;
@@ -377,7 +380,6 @@ struct ImageBuilder {
 	ImageBuilder& image_type(VkImageType type);
 	ImageBuilder& format(VkFormat format);
 	ImageBuilder& size(uint32_t width, uint32_t height, uint32_t depth);
-	// 0 -- maximum levels of mip
 	ImageBuilder& enable_mips(bool enable = true);
 	ImageBuilder& layers(uint32_t n);
 	ImageBuilder& samples(uint32_t n);

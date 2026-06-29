@@ -1041,6 +1041,39 @@ void CommandBuffer::cmd_image_copy(Image* src, Image* dst, ImageCopy& region) {
 		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		1, &region._image_copy);
 }
+
+void CommandBuffer::cmds_image_full_copy(Image* src, Image* dst, VkImageAspectFlags aspect) {
+	assert(src->builder._image_info.arrayLayers == dst->builder._image_info.arrayLayers);
+	assert(src->builder._image_info.mipLevels == dst->builder._image_info.mipLevels);
+	assert(src->builder._image_info.extent.width == dst->builder._image_info.extent.width);
+	assert(src->builder._image_info.extent.height == dst->builder._image_info.extent.height);
+	assert(src->builder._image_info.extent.depth == 1);
+	assert(dst->builder._image_info.extent.depth == 1);
+	uint32_t n_layers = src->builder._image_info.arrayLayers;
+	uint32_t n_mips = src->builder._image_info.mipLevels;
+	uint32_t base_width = src->builder._image_info.extent.width;
+	uint32_t base_height = src->builder._image_info.extent.height;
+	
+	std::vector<VkImageCopy> vk_regions(n_mips);
+	for (uint32_t m = 0; m < n_mips; ++m) {
+		ImageCopy region;
+		region
+			.src_layer(0, n_layers)
+			.dst_layer(0, n_layers)
+			.extent(base_width >> m, base_height >> m)
+			.src_aspect(aspect)
+			.src_mip(m)
+			.dst_aspect(aspect)
+			.dst_mip(m);
+		vk_regions[m] = region._image_copy;
+	}
+
+	vkCmdCopyImage(vk_command_buffer,
+		src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk_regions.size(), vk_regions.data());
+}
+
 void CommandBuffer::cmd_fill_buffer(Buffer* dst_buffer, uint32_t data, VkDeviceSize dst_offset, VkDeviceSize size) {
 	vkCmdFillBuffer(vk_command_buffer, dst_buffer->vk_buffer, dst_offset,
 		(size == VK_WHOLE_SIZE ? dst_buffer->builder._info.size : size), data);
