@@ -1,14 +1,42 @@
-# CMakeLists.txt inside the subdirectory
-file(GLOB CPP_FILES "*.cpp")
+file(GLOB CHILDREN
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*"
+)
 
-foreach(cpp_file ${CPP_FILES})
-    get_filename_component(target_name ${cpp_file} NAME_WE)
-    add_executable(${target_name} ${cpp_file})
+foreach(child ${CHILDREN})
+    set(project_dir "${CMAKE_CURRENT_SOURCE_DIR}/${child}")
 
-    target_link_libraries(${target_name}
-        PRIVATE ${OTCV_BASE_LIB}
-        PRIVATE ${OTCV_FRAME_GRAPH_LIB}
-        PRIVATE ${OTCV_IMGUI_LIB})
-    add_dependencies(${target_name} ${OTCV_SHADER_TOOL})
+    if(IS_DIRECTORY "${project_dir}")
+        file(GLOB_RECURSE PROJECT_SOURCES CONFIGURE_DEPENDS
+            "${project_dir}/*.cpp"
+            "${project_dir}/*.h"
+            "${project_dir}/*.hpp"
+        )
 
+        if(PROJECT_SOURCES)
+            # Use the directory name as the executable target name.
+            set(target_name "${child}")
+
+            add_executable(${target_name}
+                ${PROJECT_SOURCES}
+            )
+
+            target_include_directories(${target_name}
+                PRIVATE
+                    "${project_dir}"
+                    "${CMAKE_BINARY_DIR}/include"
+            )
+
+            target_link_libraries(${target_name}
+                PRIVATE
+                    ${OTCV_BASE_LIB}
+                    ${OTCV_FRAME_GRAPH_LIB}
+                    ${OTCV_IMGUI_LIB}
+            )
+
+            add_dependencies(${target_name}
+                ${OTCV_SHADER_TOOL}
+            )
+        endif()
+    endif()
 endforeach()

@@ -11,6 +11,8 @@
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 
+#include "glsl_reflect/framegraph_demo/blinn_phong.vert.hpp"
+
 #include <GLFW/glfw3.h>
 
 using namespace otcv;
@@ -109,7 +111,7 @@ struct UtilObjects {
         // otcv::ComputePipeline*      compute0 = nullptr;
         // otcv::ComputePipeline*      compute1 = nullptr;
         glm::mat4                   model_mat;
-        std::shared_ptr<StaticUBO>  ubo = nullptr;
+        std::shared_ptr<StaticUBO<BlinnPhongVert::UBO>>  ubo = nullptr;
         DescriptorSet* graphics_desc_set = nullptr;
         DescriptorSet* compute_desc_set = nullptr;
 
@@ -173,7 +175,7 @@ struct UtilObjects {
     }
 
     void load_shaders() {
-        shader_blob = otcv::load_shaders_from_dir("./spirv/");
+        shader_blob = otcv::load_shaders_from_dir("./spirv/framegraph_demo");
     }
 
     void init_computes() {
@@ -248,11 +250,6 @@ struct UtilObjects {
             .add_dynamic_state(VK_DYNAMIC_STATE_SCISSOR)
             .build();
 
-        // UBO alignment
-        Std140AlignmentType ubo_alignment;
-        ubo_alignment.add(Std140AlignmentType::InlineType::Mat4, "model");
-        ubo_alignment.add(Std140AlignmentType::InlineType::Mat4, "projView");
-
         // samplers
         Sampler* linear_sampler = SamplerBuilder().build();
         Sampler* nearest_sampler = SamplerBuilder().filter(VK_FILTER_NEAREST, VK_FILTER_NEAREST).build();
@@ -279,10 +276,11 @@ struct UtilObjects {
                 glm::translate(glm::mat4(1.0f), { 2.0f, 2.0f, 0.0f }) *
                 glm::rotate(glm::mat4(1.0f), glm::pi<float>() / 6.0f, { 0.0f, -1.0f, 0.0f }) *
                 glm::scale(glm::mat4(1.0f), { 1.5f, 1.0f, 1.0f });
-            ribbon.ubo.reset(new StaticUBO(ubo_alignment));
-            ribbon.ubo->set(StaticUBOAccess()["model"], &ribbon.model_mat);
-            glm::mat4 pv = cam->proj * cam->view;
-            ribbon.ubo->set(StaticUBOAccess()["projView"], &pv);
+            BlinnPhongVert::UBO ubo;
+            ubo.model = mat4_to_array(ribbon.model_mat);
+            ubo.projView = mat4_to_array(cam->proj * cam->view);
+            ribbon.ubo.reset(new StaticUBO<BlinnPhongVert::UBO>());
+            ribbon.ubo->set({ 0, sizeof(BlinnPhongVert::UBO) }, &ubo);
             ribbon.graphics_desc_set = desc_pool->allocate(ribbon.graphics->desc_set_layouts[0]);
             ribbon.graphics_desc_set->bind_buffer(0, ribbon.ubo->_buf);
             ribbon.graphics_desc_set->bind_sampler(1, &linear_sampler);
@@ -317,10 +315,11 @@ struct UtilObjects {
             ground.model_mat =
                 glm::translate(glm::mat4(1.0f), { 0.0f, -0.15f, 0.0f }) *
                 glm::scale(glm::mat4(1.0f), { 10.0f, 0.3f, 10.0f });
-            ground.ubo.reset(new StaticUBO(ubo_alignment));
-            ground.ubo->set(StaticUBOAccess()["model"], &ground.model_mat);
-            glm::mat4 pv = cam->proj * cam->view;
-            ground.ubo->set(StaticUBOAccess()["projView"], &pv);
+            BlinnPhongVert::UBO ubo;
+            ubo.model = mat4_to_array(ground.model_mat);
+            ubo.projView = mat4_to_array(cam->proj * cam->view);
+            ground.ubo.reset(new StaticUBO<BlinnPhongVert::UBO>());
+            ground.ubo->set({ 0, sizeof(BlinnPhongVert::UBO) }, &ubo);
             ground.graphics_desc_set = desc_pool->allocate(ground.graphics->desc_set_layouts[0]);
             ground.graphics_desc_set->bind_buffer(0, ground.ubo->_buf);
             ground.graphics_desc_set->bind_sampler(1, &linear_sampler);
