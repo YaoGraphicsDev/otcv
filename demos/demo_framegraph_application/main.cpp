@@ -1,5 +1,5 @@
 #include "frame_graph_application.h"
-#include "application_utils.hpp"
+#include "utils.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
