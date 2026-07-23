@@ -35,7 +35,7 @@ CPP_TYPES = {
     "uvec3": ("std::array<std::uint32_t, 3>", 12),
     "uvec4": ("std::array<std::uint32_t, 4>", 16),
     "mat2": ("std::array<float, 4>", 16),
-    "mat3": ("std::array<float, 9>", 36),
+    "mat3": ("std::array<float, 12>", 48),
     "mat4": ("std::array<float, 16>", 64),
 }
 

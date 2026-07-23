@@ -24,6 +24,7 @@ extern std::set<std::shared_ptr<Image>, RawPtrLess<Image>> g_user_images;
 extern std::set<std::shared_ptr<Buffer>, RawPtrLess<Buffer>> g_user_buffers;
 extern std::set<std::shared_ptr<ShaderModule>, RawPtrLess<ShaderModule>> g_user_shader_modules;
 extern std::set<std::shared_ptr<VertexBuffer>, RawPtrLess<VertexBuffer>> g_user_vertex_buffers;
+extern std::set<std::shared_ptr<AccelerationStructure>, RawPtrLess<AccelerationStructure>> g_user_acc_structs;
 extern std::set<std::shared_ptr<GraphicsPipeline>, RawPtrLess<GraphicsPipeline>> g_user_graphics_pipelines;
 extern std::set<std::shared_ptr<ComputePipeline>, RawPtrLess<ComputePipeline>> g_user_compute_pipelines;
 extern std::set<std::shared_ptr<DescriptorPool>, RawPtrLess<DescriptorPool>> g_user_descriptor_pools;

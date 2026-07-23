@@ -233,6 +233,25 @@ void get_spirv_resource_bindings(const uint32_t* spirv_bin, uint32_t word_count,
 			.end();
 	}
 
+	// accecleration structure
+	for (const auto& as : shader_res.acceleration_structures) {
+		uint32_t set = compiler.get_decoration(as.id, spv::DecorationDescriptorSet);
+		uint32_t binding = compiler.get_decoration(as.id, spv::DecorationBinding);
+		std::string name = compiler.get_name(as.id);
+
+		spirv_cross::SPIRType type = compiler.get_type(as.type_id);
+		uint32_t array_size = 1;
+		if (!type.array.empty()) {
+			array_size = type.array[0];
+		}
+		builder
+			.uniform(uint16_t(set), uint16_t(binding))
+			.type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
+			.array_count(array_size)
+			.name(name)
+			.end();
+	}
+
 	// push constants
 	uint32_t pc_offset = 0;
 	uint32_t pc_size = 0;
@@ -732,11 +751,11 @@ ShaderModuleBuilder::Uniform& uniform_at(GraphicsPipeline* pipeline, uint16_t se
 }
 
 VertexBuffer* screen_quad_ndc() {
-	std::vector<float> v_data = {
+	std::vector<float> v_data = { // depth lies in the middle of NDC space
 		// x | y | z | u | v
-		-1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-		-1.0f,  3.0f, 0.0f, 0.0f, 2.0f,
-		 3.0f, -1.0f, 0.0f, 2.0f, 0.0f,
+		-1.0f, -1.0f, 0.5f, 0.0f, 0.0f,
+		-1.0f,  3.0f, 0.5f, 0.0f, 2.0f,
+		 3.0f, -1.0f, 0.5f, 2.0f, 0.0f,
 	};
 
 	BufferBuilder bb;

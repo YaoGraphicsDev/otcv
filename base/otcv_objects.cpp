@@ -22,6 +22,7 @@ std::set<std::shared_ptr<Buffer>, RawPtrLess<Buffer>> g_user_buffers = {};
 std::set<std::shared_ptr<ShaderModule>, RawPtrLess<ShaderModule>> g_user_shader_modules = {};
 std::set<std::shared_ptr<RenderPass>, RawPtrLess<RenderPass>> g_user_render_passes = {};
 std::set<std::shared_ptr<VertexBuffer>, RawPtrLess<VertexBuffer>> g_user_vertex_buffers = {};
+std::set<std::shared_ptr<AccelerationStructure>, RawPtrLess<AccelerationStructure>> g_user_acc_structs = {};
 std::set<std::shared_ptr<GraphicsPipeline>, RawPtrLess<GraphicsPipeline>> g_user_graphics_pipelines = {};
 std::set<std::shared_ptr<ComputePipeline>, RawPtrLess<ComputePipeline>> g_user_compute_pipelines = {};
 std::set<std::shared_ptr<DescriptorPool>, RawPtrLess<DescriptorPool>> g_user_descriptor_pools = {};
@@ -490,6 +491,34 @@ void DescriptorSet::bind_consecutive_storage_images(uint32_t binding_start, uint
 	vkUpdateDescriptorSets(g_device->vk_device, writes.size(), writes.data(), 0, nullptr);
 }
 
+void DescriptorSet::bind_acceleration_structure(uint32_t binding, AccelerationStructure* as) {
+	auto iter = std::find_if(bindings.begin(), bindings.end(), [&](VkDescriptorSetLayoutBinding& b) {return b.binding == binding; });
+	if (iter == bindings.end()) {
+		std::cout << "Cannot locate binding = " << binding << " for acceleration structure" << std::endl;
+		assert(false);
+		return;
+	}
+
+	assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+
+	VkWriteDescriptorSetAccelerationStructureKHR info = {};
+	info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+	info.pNext = NULL;
+	info.accelerationStructureCount = 1;
+	info.pAccelerationStructures = &as->vk_as;
+
+	VkWriteDescriptorSet write{};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.pNext = &info;
+	write.dstSet = vk_desc_set;
+	write.dstBinding = binding;
+	write.dstArrayElement = 0;
+	write.descriptorCount = 1;
+	write.descriptorType = iter->descriptorType;
+
+	vkUpdateDescriptorSets(g_device->vk_device, 1, &write, 0, nullptr);
+}
+
 DescriptorPool::DescriptorPool(DescriptorPoolBuilder& builder) {
 	builder._info.poolSizeCount = builder._pool_sizes.size();
 	builder._info.pPoolSizes = builder._pool_sizes.data();
@@ -929,6 +958,11 @@ void CommandBuffer::cmd_set_scissor(float width, float height, float x, float y)
 	VkRect2D scissor{ {x, y}, {width, height} };
 	vkCmdSetScissor(this->vk_command_buffer, 0, 1, &scissor);
 }
+
+void CommandBuffer::cmd_set_depth_compare_op(VkCompareOp op) {
+	vkCmdSetDepthCompareOp(this->vk_command_buffer, op);
+}
+
 void CommandBuffer::cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data) {
 	auto iter = layout->push_consts.find(name);
 	if (iter == layout->push_consts.end()) {
@@ -1207,6 +1241,254 @@ void VertexBuffer::wait_for_async_upload() {
 	for (Buffer* buf : buffers) {
 		buf->wait_for_async();
 	}
+}
+
+AccelerationStructure::AccelerationStructure(AccelerationStructureBuilder& builder) {
+	this->builder = std::move(builder); // this should be safe as only trivial fields in the builder matter.
+
+	// create
+	if (this->builder._vk_create_info.type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR) {
+		if (this->builder._vk_build_geo_info.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) {
+			std::cout << "updatable BLAS not supported" << std::endl;
+			assert(false);
+			exit(1);
+		}
+		create_build_as_blas();
+	} else if (this->builder._vk_create_info.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
+		if (!this->builder._tri_geos.empty()) {
+			std::cout << "cannot create TLAS with triangle geometry" << std::endl;
+			assert(false);
+			exit(1);
+		}
+		create_build_as_tlas();
+	} else {
+		std::cout << "Has to be either BLAS or TLAS" << std::endl;
+		assert(false);
+		exit(1);
+	}
+}
+
+void AccelerationStructure::create_build_as_blas() {
+	// 1. create
+	// fill out VkAccelerationStructureBuildGeometryInfoKHR's non-trivial fields
+	std::vector<VkAccelerationStructureGeometryKHR*> geo_ptrs(builder._tri_geos.size());
+	for (uint32_t i = 0; i < builder._tri_geos.size(); ++i) {
+		geo_ptrs[i] = &builder._tri_geos[i]._vk_geo;
+	}
+	builder._vk_build_geo_info.geometryCount = builder._tri_geos.size();
+	builder._vk_build_geo_info.pGeometries = nullptr;
+	builder._vk_build_geo_info.ppGeometries = geo_ptrs.data();
+
+	std::vector<uint32_t> prim_counts;
+	for (auto& tri_geo : builder._tri_geos) {
+		prim_counts.push_back(tri_geo.n_tris);
+	}
+
+	// this is actually a valid use case
+	//if (prim_counts.empty()) {
+	//	std::cout << "No primitives to build" << std::endl;
+	//	assert(false);
+	//	exit(1);
+	//}
+
+	// calculate various buffer sizes for this acceleration structure
+	VkAccelerationStructureBuildSizesInfoKHR build_size_info = {};
+	build_size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+	build_size_info.pNext = nullptr;
+	build_size_info.accelerationStructureSize = 0;
+	build_size_info.updateScratchSize = 0;
+	build_size_info.buildScratchSize = 0;
+
+	g_device->fn<PFN_vkGetAccelerationStructureBuildSizesKHR>("vkGetAccelerationStructureBuildSizesKHR") (
+		g_device->vk_device,
+		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+		&builder._vk_build_geo_info, prim_counts.data(),
+		&build_size_info);
+
+	// fill out VkAccelerationStructureCreateInfoKHR's missing size info
+	builder._vk_create_info.size = build_size_info.accelerationStructureSize;
+
+	backing_buf = new Buffer(BufferBuilder()
+		.size(build_size_info.accelerationStructureSize)
+		.usage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+		.host_access(BufferBuilder::Access::Invisible));
+	builder._vk_create_info.buffer = backing_buf->vk_buffer;
+
+	VkResult result = g_device->fn<PFN_vkCreateAccelerationStructureKHR>("vkCreateAccelerationStructureKHR")(g_device->vk_device, &builder._vk_create_info, VK_NULL_HANDLE, &vk_as);
+	if (result != VK_SUCCESS) {
+		assert(false);
+		std::cout << "cannot create BLAS, error code = " << result << std::endl;
+		exit(1);
+	}
+
+
+	// 2. build
+	builder._vk_build_geo_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	builder._vk_build_geo_info.srcAccelerationStructure = VK_NULL_HANDLE;
+	builder._vk_build_geo_info.dstAccelerationStructure = vk_as;
+	VkDeviceSize scratch_size = 
+		builder._vk_build_geo_info.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR ? 
+		std::max(build_size_info.buildScratchSize, build_size_info.updateScratchSize) :
+		build_size_info.buildScratchSize;
+
+	scratch_buf = new Buffer(BufferBuilder()
+		.size(scratch_size)
+		.usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+		.host_access(BufferBuilder::Access::Invisible));
+	builder._vk_build_geo_info.scratchData.deviceAddress = scratch_buf->device_address();
+
+	std::vector<Buffer*> temp_bufs;
+	for (AccelerationStructureBuilder::TrianglesGeometry& tri_geo : builder._tri_geos) {
+		uint32_t vertex_count = tri_geo._vk_geo.geometry.triangles.maxVertex + 1;
+		VkDeviceSize vertex_stride = tri_geo._vk_geo.geometry.triangles.vertexStride;
+		Buffer* vb = BufferBuilder()
+			.size(vertex_count * vertex_stride)
+			.usage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+			.host_access(BufferBuilder::Access::Coherent)
+			.build();
+		assert(tri_geo._vertex_data);
+		vb->populate(tri_geo._vertex_data);
+		tri_geo._vk_geo.geometry.triangles.vertexData.deviceAddress = vb->device_address();
+		temp_bufs.push_back(vb);
+
+		uint32_t index_count = tri_geo.n_tris * 3;
+		uint32_t index_size = 0 << (tri_geo._vk_geo.geometry.triangles.indexType + 1);
+		switch (tri_geo._vk_geo.geometry.triangles.indexType) {
+		case VK_INDEX_TYPE_UINT16:
+			index_size = 2;
+			break;
+		case VK_INDEX_TYPE_UINT32:
+			index_size = 4;
+			break;
+		default:
+			assert(false);
+		}
+
+		Buffer* ib = BufferBuilder()
+			.size(index_count * index_size)
+			.usage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+			.host_access(BufferBuilder::Access::Coherent)
+			.build();
+		assert(tri_geo._index_data);
+		ib->populate(tri_geo._index_data);
+		tri_geo._vk_geo.geometry.triangles.indexData.deviceAddress = ib->device_address();
+		temp_bufs.push_back(ib);
+	}
+	
+	std::vector<VkAccelerationStructureBuildRangeInfoKHR> build_ranges(builder._tri_geos.size());
+	for (uint32_t i = 0; i < builder._tri_geos.size(); ++i) {
+		build_ranges[i] = { builder._tri_geos[i].n_tris, 0, 0, 0 };
+	}
+	const VkAccelerationStructureBuildRangeInfoKHR* build_ranges_p = build_ranges.data();
+
+	// build commands
+	CommandBuffer* cmd = begin_single_time_command_buffer();
+	g_device->fn<PFN_vkCmdBuildAccelerationStructuresKHR>("vkCmdBuildAccelerationStructuresKHR")(
+		cmd->vk_command_buffer, 1, &builder._vk_build_geo_info, &build_ranges_p);
+	end_single_time_command_buffer(cmd);
+
+	for (Buffer*& buf : temp_bufs) {
+		buf->destroy();
+	}
+}
+
+void AccelerationStructure::create_build_as_tlas() {
+	// 1. create
+	// fill out VkAccelerationStructureBuildGeometryInfoKHR's non-trivial fields
+	builder._vk_build_geo_info.geometryCount = 1;
+	builder._vk_build_geo_info.pGeometries = &builder._instance_geo._vk_geo;
+	builder._vk_build_geo_info.ppGeometries = nullptr;
+
+	// calculate various buffer sizes for this acceleration structure
+	VkAccelerationStructureBuildSizesInfoKHR build_size_info = {};
+	build_size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+	build_size_info.pNext = nullptr;
+	build_size_info.accelerationStructureSize = 0;
+	build_size_info.updateScratchSize = 0;
+	build_size_info.buildScratchSize = 0;
+
+	uint32_t prim_count = builder._instance_geo._instances.size();
+	assert(prim_count > 0);
+	g_device->fn<PFN_vkGetAccelerationStructureBuildSizesKHR>("vkGetAccelerationStructureBuildSizesKHR") (
+		g_device->vk_device,
+		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+		&builder._vk_build_geo_info, &prim_count,
+		&build_size_info);
+
+	// fill out VkAccelerationStructureCreateInfoKHR's missing size info
+	builder._vk_create_info.size = build_size_info.accelerationStructureSize;
+
+	backing_buf = new Buffer(BufferBuilder()
+		.size(build_size_info.accelerationStructureSize)
+		.usage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+		.host_access(BufferBuilder::Access::Invisible));
+	builder._vk_create_info.buffer = backing_buf->vk_buffer;
+
+	VkResult result = g_device->fn<PFN_vkCreateAccelerationStructureKHR>("vkCreateAccelerationStructureKHR")(g_device->vk_device, &builder._vk_create_info, VK_NULL_HANDLE, &vk_as);
+	if (result != VK_SUCCESS) {
+		assert(false);
+		std::cout << "cannot create TLAS, error code = " << result << std::endl;
+		exit(1);
+	}
+
+
+	// 2. build
+	builder._vk_build_geo_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	builder._vk_build_geo_info.srcAccelerationStructure = VK_NULL_HANDLE;
+	builder._vk_build_geo_info.dstAccelerationStructure = vk_as;
+	VkDeviceSize scratch_size =
+		builder._vk_build_geo_info.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR ?
+		std::max(build_size_info.buildScratchSize, build_size_info.updateScratchSize) :
+		build_size_info.buildScratchSize;
+
+	scratch_buf = new Buffer(BufferBuilder()
+		.size(scratch_size)
+		.usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+		.host_access(BufferBuilder::Access::Invisible));
+	builder._vk_build_geo_info.scratchData.deviceAddress = scratch_buf->device_address();
+
+	std::vector<VkAccelerationStructureInstanceKHR> vk_instances(builder._instance_geo._instances.size());
+	for (uint32_t i = 0; i < builder._instance_geo._instances.size(); ++i) {
+		vk_instances[i] = builder._instance_geo._instances[i]._vk_instance;
+	}
+
+	Buffer* ib = BufferBuilder() // instance buffer, not index buffer
+		.size(vk_instances.size() * sizeof(VkAccelerationStructureInstanceKHR))
+		.usage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+		.host_access(BufferBuilder::Access::Coherent)
+		.build();
+	ib->populate(vk_instances.data());
+	builder._instance_geo._vk_geo.geometry.instances.data.deviceAddress = ib->device_address();
+
+	VkAccelerationStructureBuildRangeInfoKHR build_range = { builder._instance_geo._instances.size(), 0, 0, 0 };
+	const VkAccelerationStructureBuildRangeInfoKHR* build_range_p = &build_range;
+
+	// build commands
+	CommandBuffer* cmd = begin_single_time_command_buffer();
+	g_device->fn<PFN_vkCmdBuildAccelerationStructuresKHR>("vkCmdBuildAccelerationStructuresKHR")(
+		cmd->vk_command_buffer, 1, &builder._vk_build_geo_info, &build_range_p);
+	end_single_time_command_buffer(cmd);
+
+	ib->destroy();
+}
+
+AccelerationStructure::~AccelerationStructure() {
+	delete backing_buf;
+	delete scratch_buf;
+	g_device->fn<PFN_vkDestroyAccelerationStructureKHR>("vkDestroyAccelerationStructureKHR")(g_device->vk_device, vk_as, nullptr);
+}
+
+void AccelerationStructure::destroy() {
+	std::shared_ptr<AccelerationStructure> ptr(std::shared_ptr<AccelerationStructure>(), this);
+	g_user_acc_structs.erase(ptr);
+}
+
+VkDeviceAddress AccelerationStructure::device_address() {
+	VkAccelerationStructureDeviceAddressInfoKHR address_info;
+	address_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+	address_info.pNext = nullptr;
+	address_info.accelerationStructure = this->vk_as;
+	return g_device->fn<PFN_vkGetAccelerationStructureDeviceAddressKHR>("vkGetAccelerationStructureDeviceAddressKHR")(g_device->vk_device, &address_info);
 }
 
 // image
@@ -1499,8 +1781,20 @@ Buffer::Buffer(BufferBuilder& builder) {
 
 	VkMemoryAllocateInfo alloc_info{};
 	alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	alloc_info.pNext = nullptr;
 	alloc_info.allocationSize = mem_requirements.size;
 	alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, builder._mem_props);
+
+	// for buffers that need device address
+	VkMemoryAllocateFlagsInfo flags_info = {};
+	flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+	flags_info.pNext = nullptr;
+	flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+	flags_info.deviceMask = 0;
+	if (builder._info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+		alloc_info.pNext = &flags_info;
+	}
+
 	result = vkAllocateMemory(g_device->vk_device, &alloc_info, nullptr, &vk_memory);
 	if (result != VK_SUCCESS) {
 		std::cout << "Cannot allocate memory, error code = " << result << std::endl;
@@ -1649,6 +1943,15 @@ void Buffer::flush() {
 	range.offset = 0;
 	range.size = builder._info.size;
 	vkFlushMappedMemoryRanges(g_device->vk_device, 1, &range);
+}
+
+VkDeviceAddress Buffer::device_address() {
+	assert(builder._info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+	VkBufferDeviceAddressInfo addr = {};
+	addr.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	addr.pNext = nullptr;
+	addr.buffer = vk_buffer;
+	return vkGetBufferDeviceAddress(g_device->vk_device, &addr);
 }
 
 // render pass

@@ -42,6 +42,8 @@ bool layer_supported(const std::string& name) {
     }
 }
 
+
+
 void create_instance() {
     for (int i = 0; i < layer_count; ++i) {
         if (!layer_supported(std::string(layer_names[i]))) {
@@ -173,13 +175,22 @@ void create_device() {
     float queue_priority = 1.0f;
     queue_info.pQueuePriorities = &queue_priority;
 
-    VkPhysicalDeviceFeatures device_feature{};
-    device_feature.samplerAnisotropy = VK_TRUE;
-    device_feature.fillModeNonSolid = VK_TRUE;
-    device_feature.multiDrawIndirect = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR ray_query_feature{};
+    ray_query_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    ray_query_feature.rayQuery = VK_TRUE;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acc_struc_feature{};
+    acc_struc_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    acc_struc_feature.pNext = &ray_query_feature;
+    acc_struc_feature.accelerationStructure = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features v11_feature{};
     v11_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    if (enable_ray_query) {
+        v11_feature.pNext = &acc_struc_feature;
+        v11_feature.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+        v11_feature.storageBuffer16BitAccess = VK_TRUE;
+    }
     v11_feature.shaderDrawParameters = true;
 
     // for descriptor indexing (bindless),
@@ -201,11 +212,19 @@ void create_device() {
     v12_feature.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     v12_feature.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
     v12_feature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    if (enable_ray_query) {
+        v12_feature.bufferDeviceAddress = VK_TRUE;
+    }
 
     VkPhysicalDeviceVulkan13Features v13_feature{};
     v13_feature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     v13_feature.pNext = &v12_feature;
     v13_feature.dynamicRendering = VK_TRUE;
+
+    VkPhysicalDeviceFeatures device_feature{};
+    device_feature.samplerAnisotropy = VK_TRUE;
+    device_feature.fillModeNonSolid = VK_TRUE;
+    device_feature.multiDrawIndirect = VK_TRUE;
 
     VkPhysicalDeviceFeatures2 device_feature_2{};
     device_feature_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -216,6 +235,11 @@ void create_device() {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME
     };
+    if (enable_ray_query) {
+        non_core_device_extension_names.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        non_core_device_extension_names.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        non_core_device_extension_names.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -379,6 +403,7 @@ void destroy_context() {
     g_user_semaphores.clear();
     g_user_fences.clear();
     g_user_vertex_buffers.clear();
+    g_user_acc_structs.clear();
     g_user_compute_pipelines.clear();
     g_user_graphics_pipelines.clear();
     g_user_descriptor_pools.clear();

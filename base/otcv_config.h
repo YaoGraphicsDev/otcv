@@ -9,10 +9,15 @@
 #define OTCV_WINDOW GLFW
 
 namespace otcv {
-
+#if NDEBUG
+	static uint32_t layer_count = 0;
+	// static const char* _layer_names[] = { };
+	static const char** layer_names = nullptr;
+#else
 	static uint32_t layer_count = 1;
 	static const char* _layer_names[] = { "VK_LAYER_KHRONOS_validation" };
 	static const char** layer_names = _layer_names;
+#endif
 
 	static VkQueueFlagBits queue_required = VkQueueFlagBits(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
 
@@ -23,4 +28,5 @@ namespace otcv {
 	
 	// https://vkguide.dev/docs/chapter-4/descriptors/#:~:text=Allocating%20descriptor%20sets,those%20descriptor%20pools
 	static bool allow_free_descriptor_set = false;
+	static bool enable_ray_query = true;
 }

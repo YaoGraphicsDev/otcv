@@ -33,21 +33,30 @@ FieldRange field_range(Accessor accessor) {
     )
 
 template <typename Vec2>
-std::array<float, 2> vec2_to_array(const Vec2& v) { return { v.x, v.y }; }
+std::array<typename Vec2::value_type, 2> vec2_to_array(const Vec2& v) { return { v.x, v.y }; }
 
 template <typename Vec3>
-std::array<float, 3> vec3_to_array(const Vec3& v) { return { v.x, v.y, v.z }; }
+std::array<typename Vec3::value_type, 3> vec3_to_array(const Vec3& v) { return { v.x, v.y, v.z }; }
 
 template <typename Vec4>
-std::array<float, 4> vec4_to_array(const Vec4& v) { return { v.x, v.y, v.z, v.w }; }
+std::array<typename Vec4::value_type, 4> vec4_to_array(const Vec4& v) { return { v.x, v.y, v.z, v.w }; }
 
 template <typename Mat4>
-std::array<float, 16> mat4_to_array(const Mat4& m) {
+std::array<typename Mat4::value_type, 16> mat4_to_array(const Mat4& m) {
 	return {
 		m[0][0], m[0][1], m[0][2], m[0][3],
 		m[1][0], m[1][1], m[1][2], m[1][3],
 		m[2][0], m[2][1], m[2][2], m[2][3],
 		m[3][0], m[3][1], m[3][2], m[3][3]
+	};
+}
+
+template <typename Mat3>
+std::array<typename Mat3::value_type, 12> mat3_to_array(const Mat3& m) {
+	return {
+		m[0][0], m[0][1], m[0][2], 0.0f,
+		m[1][0], m[1][1], m[1][2], 0.0f,
+		m[2][0], m[2][1], m[2][2], 0.0f,
 	};
 }
 
@@ -120,51 +129,6 @@ struct StaticUBOArray {
 	otcv::Buffer* _buf;
 };
 
-struct SSBOWriteContext {
-	uint32_t id;
-	struct AccessContext {
-		FieldRange range;
-		const void* value;
-	};
-	std::vector<AccessContext> access_ctxs;
-};
-// Only supports copy-in at initialization. Synchronous write.
-template <typename T>
-struct SSBO {
-	SSBO(uint32_t n_ssbo, VkBufferUsageFlags additional_usage = 0) {
-		_n_ssbos = n_ssbo;
-
-		otcv::BufferBuilder bb;
-		bb.usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | additional_usage)
-			.host_access(otcv::BufferBuilder::Access::Invisible)
-			.size(T::ElementStride * _n_ssbos);
-		_buf = new otcv::Buffer(bb);
-		_staging_buf.resize(_buf->builder._info.size);
-	}
-	~SSBO() {
-		delete _buf;
-		_buf = nullptr;
-	}
-
-	// should only be used for initializtion. As it idle waits for transfer to finish
-	// provide asyn version
-	void write(std::vector<SSBOWriteContext>& writes) {
-		for (SSBOWriteContext& write : writes) {
-			assert(write.id < _n_ssbos);
-			for (SSBOWriteContext::AccessContext& acc_ctx : write.access_ctxs) {
-				assert(T::ElementStride * write.id + acc_ctx.range.offset + acc_ctx.range.size <= _staging_buf.size());
-				std::memcpy(_staging_buf.data() + T::ElementStride * write.id + acc_ctx.range.offset, acc_ctx.value, acc_ctx.range.size);
-			}
-		}
-
-		_buf->populate(_staging_buf.data());
-	}
-
-	uint32_t _n_ssbos;
-	otcv::Buffer* _buf;
-	std::vector<uint8_t> _staging_buf;
-};
-
 /*
 * Supports writing through a staging buffer and copy commands.Requires a command buffer as input parameter.
 * Best of both (StaticUBOArray & SSBO) world:, 
@@ -174,8 +138,8 @@ struct SSBO {
 * Only downside being the copy command
 */
 template <typename T>
-struct StagedWriteSSBO {
-	StagedWriteSSBO(uint32_t n_ssbo, VkBufferUsageFlags additional_usage = 0) {
+struct SSBO {
+	SSBO(uint32_t n_ssbo, VkBufferUsageFlags additional_usage = 0) {
 		_n_ssbos = n_ssbo;
 
 		{
@@ -194,7 +158,7 @@ struct StagedWriteSSBO {
 		}
 	}
 
-	~StagedWriteSSBO() {
+	~SSBO() {
 		delete _buf;
 		delete _staging_buf;
 		_buf = nullptr;
@@ -214,6 +178,11 @@ struct StagedWriteSSBO {
 		assert(T::ElementStride * ssbo_id < _staging_buf->builder._info.size);
 		assert(T::ElementStride * ssbo_id + sizeof(ele) <= _staging_buf->builder._info.size);
 		std::memcpy((char*)_staging_buf->mapped + T::ElementStride * ssbo_id, (void*)&ele, sizeof(ele));
+	}
+
+	void full_sync_write(const std::vector<typename T::Element>& buf) {
+		assert(T::ElementStride * _n_ssbos == buf.size() * sizeof(typename T::Element)); // check for compact layout within vector
+		_buf->populate(buf.data());
 	}
 
 	void push_staging_commands(

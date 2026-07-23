@@ -265,6 +265,254 @@ VertexBuffer* VertexBufferBuilder::build() {
 	return vb;
 }
 
+// acceleration structure builder
+
+AccelerationStructureBuilder::TrianglesGeometry::TrianglesGeometry(AccelerationStructureBuilder* parent) {
+	_parent = parent;
+
+	//_vk_build_range_info = {};
+	//_vk_build_range_info.primitiveCount = 0;
+	//_vk_build_range_info.primitiveOffset = 0;
+	//_vk_build_range_info.firstVertex = 0;
+	//_vk_build_range_info.transformOffset = 0;
+
+	_vk_geo = {};
+	_vk_geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	_vk_geo.pNext = nullptr;
+	_vk_geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+	_vk_geo.geometry.triangles = {};
+	_vk_geo.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+	_vk_geo.geometry.triangles.pNext = nullptr;
+	_vk_geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	_vk_geo.geometry.triangles.vertexData = { 0 };
+	_vk_geo.geometry.triangles.vertexStride = sizeof(float) * 3;
+	_vk_geo.geometry.triangles.maxVertex = 0;
+	_vk_geo.geometry.triangles.indexType = VK_INDEX_TYPE_UINT16;
+	_vk_geo.geometry.triangles.indexData = { 0 };
+	_vk_geo.geometry.triangles.transformData = { 0 };
+	_vk_geo.flags = 0;
+
+	n_tris = 0;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::vertex_format(VkFormat format) {
+	_vk_geo.geometry.triangles.vertexFormat = format;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::vertex_stride(VkDeviceSize stride) {
+	_vk_geo.geometry.triangles.vertexStride = stride;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::vertex_count(uint32_t count) {
+	assert(count > 0);
+	_vk_geo.geometry.triangles.maxVertex = count - 1;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::vertex_data(void* data) {
+	assert(data);
+	_vertex_data = data;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::index_data(void* data) {
+	assert(data);
+	_index_data = data;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::index_type(VkIndexType type) {
+	_vk_geo.geometry.triangles.indexType = type;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::triangles_count(uint32_t count) {
+	assert(count > 0);
+	n_tris = count;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::opaque() {
+	_vk_geo.flags |= VK_GEOMETRY_OPAQUE_BIT_KHR;
+	return *this;
+}
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::TrianglesGeometry::no_duplicate() {
+	_vk_geo.flags |= VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+	return *this;
+}
+AccelerationStructureBuilder& AccelerationStructureBuilder::TrianglesGeometry::end() {
+	if (n_tris == 0) {
+		std::cout << "no triangles" << std::endl;
+		assert(false);
+		exit(1);
+	}
+	return *_parent;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::InstanceGeometry(AccelerationStructureBuilder* parent) {
+	_parent = parent;
+
+	//_vk_build_range_info = {};
+	//_vk_build_range_info.primitiveCount = 0;
+	//_vk_build_range_info.primitiveOffset = 0;
+	//_vk_build_range_info.firstVertex = 0;
+	//_vk_build_range_info.transformOffset = 0;
+
+	_vk_geo = {};
+	_vk_geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	_vk_geo.pNext = nullptr;
+	_vk_geo.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	_vk_geo.geometry.instances = {};
+	_vk_geo.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+	_vk_geo.geometry.instances.pNext = nullptr;
+	_vk_geo.geometry.instances.arrayOfPointers = VK_FALSE;
+	_vk_geo.geometry.instances.data = { 0 };
+	_vk_geo.flags = 0;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::add_instance() {
+	_instances.push_back(Instance(this));
+	return _instances.back();
+}
+
+AccelerationStructureBuilder& AccelerationStructureBuilder::InstanceGeometry::end() {
+	if (_instances.empty()) {
+		std::cout << "no instances" << std::endl;
+		assert(false);
+		exit(1);
+	}
+	return *_parent;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::Instance::Instance(InstanceGeometry* parent) {
+	_parent = parent;
+
+	_vk_instance = {};
+	_vk_instance.transform = { {
+		{ 1.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 1.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 1.0f, 0.0f }
+	} };
+	_vk_instance.instanceCustomIndex = 0;
+	_vk_instance.mask = 0xFF;
+	_vk_instance.instanceShaderBindingTableRecordOffset = 0; // ray query doesnt care
+	_vk_instance.flags = 0;
+	_vk_instance.accelerationStructureReference = 0;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::blas(AccelerationStructure* blas) {
+	_vk_instance.accelerationStructureReference = blas->device_address();
+	return *this;
+}
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::transform(const void* matrix) {
+	std::memcpy(_vk_instance.transform.matrix, matrix, sizeof(_vk_instance.transform.matrix));
+	return *this;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::culling(bool enabled) {
+	if (enabled) {
+		_vk_instance.flags &= ~VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+	}
+	else {
+		_vk_instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+	}
+	return *this;
+}
+
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::flip_facing() {
+	_vk_instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
+	return *this;
+}
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::force_opacity(Opacity opa) {
+	if (opa == Opacity::Opaque) {
+		_vk_instance.flags |= VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+		_vk_instance.flags &= ~VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+	}
+	if (opa == Opacity::NoOpaque) {
+		_vk_instance.flags &= ~VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+		_vk_instance.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
+	}
+	return *this;
+}
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::custom_index(uint32_t index) {
+	_vk_instance.instanceCustomIndex = index;
+	return *this;
+}
+AccelerationStructureBuilder::InstanceGeometry::Instance& AccelerationStructureBuilder::InstanceGeometry::Instance::mask(uint32_t mask) {
+	_vk_instance.mask = mask;
+	return *this;
+}
+AccelerationStructureBuilder::InstanceGeometry& AccelerationStructureBuilder::InstanceGeometry::Instance::end() {
+	return *_parent;
+}
+AccelerationStructureBuilder::AccelerationStructureBuilder() {
+	_instance_geo = InstanceGeometry(this);
+
+	_vk_build_geo_info = {};
+	_vk_build_geo_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	_vk_build_geo_info.pNext = nullptr;
+	_vk_build_geo_info.type = VK_ACCELERATION_STRUCTURE_TYPE_GENERIC_KHR;
+	_vk_build_geo_info.flags = 0;
+	_vk_build_geo_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	_vk_build_geo_info.srcAccelerationStructure = VK_NULL_HANDLE;
+	_vk_build_geo_info.dstAccelerationStructure = VK_NULL_HANDLE;
+	_vk_build_geo_info.geometryCount = 0;
+	_vk_build_geo_info.pGeometries = nullptr;
+	_vk_build_geo_info.ppGeometries = nullptr;
+	_vk_build_geo_info.scratchData = { 0 };
+
+	_vk_create_info = {};
+	_vk_create_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	_vk_create_info.pNext = nullptr;
+	_vk_create_info.createFlags = 0;
+	_vk_create_info.buffer = VK_NULL_HANDLE;
+	_vk_create_info.offset = 0;
+	_vk_create_info.size = 0;
+	_vk_create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_GENERIC_KHR;
+	_vk_create_info.deviceAddress = 0;
+}
+
+AccelerationStructureBuilder& AccelerationStructureBuilder::level(AccelerationStructureBuilder::Level level) {
+	if (level == Level::Top) {
+		_vk_build_geo_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+		_vk_create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	}
+	else {
+		_vk_build_geo_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+		_vk_create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+	}
+	return *this;
+}
+
+AccelerationStructureBuilder& AccelerationStructureBuilder::allow_update() {
+	_vk_build_geo_info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+	return *this;
+}
+
+AccelerationStructureBuilder& AccelerationStructureBuilder::prefer(Preference pref) {
+	if (pref == Preference::FastTrace) {
+		_vk_build_geo_info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+		_vk_build_geo_info.flags &= ~VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+	}
+	if (pref == Preference::FastBuild) {
+		_vk_build_geo_info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+		_vk_build_geo_info.flags &= ~VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	}
+	if (pref == Preference::LowMemory) {
+		_vk_build_geo_info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR;
+	}
+	return *this;
+}
+
+AccelerationStructureBuilder::TrianglesGeometry& AccelerationStructureBuilder::add_triangles_geometry() {
+	_tri_geos.push_back(TrianglesGeometry(this));
+	return _tri_geos.back();
+}
+
+AccelerationStructureBuilder::InstanceGeometry& AccelerationStructureBuilder::instance_geometry() {
+	return _instance_geo;
+}
+
+AccelerationStructure* AccelerationStructureBuilder::build() {
+	AccelerationStructure* blas = new AccelerationStructure(*this);
+	g_user_acc_structs.insert(std::shared_ptr<AccelerationStructure>(blas));
+	return blas;
+}
+
 // shader module
 ShaderModuleBuilder::Uniform::Uniform() {
 	this->_parent = nullptr;

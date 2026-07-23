@@ -30,6 +30,10 @@ struct Surface {
 struct Device {
 	Device(VkDeviceCreateInfo&);
 	~Device();
+	template<typename PFN>
+	PFN fn(const std::string& name) {
+		return reinterpret_cast<PFN>(vkGetDeviceProcAddr(vk_device, name.c_str()));
+	}
 	VkDevice vk_device = VK_NULL_HANDLE;
 	VkDeviceCreateInfo info = {};
 };
@@ -164,10 +168,34 @@ struct CommandBuffer {
 		float min_depth = 0.0f, float max_depth = 1.0f);
 	void cmd_set_scissor(float width, float height,
 		float x = 0.0f, float y = 0.0f);
+	void cmd_set_depth_compare_op(VkCompareOp op);
 
 	void cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data);
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
 	void cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data);
+
+	// this call requires the same push constant block declared in both vertex and fragment shader, with the same offset
+	template<typename PC>
+	void cmd_push_constant(GraphicsPipeline* pipeline, const PC& data) {
+		vkCmdPushConstants(
+			this->vk_command_buffer,
+			pipeline->pipeline_layout->vk_pipeline_layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0,
+			sizeof(data),
+			&data);
+	}
+
+	template<typename PC>
+	void cmd_push_constant(ComputePipeline* pipeline, const PC& data) {
+		vkCmdPushConstants(
+			this->vk_command_buffer,
+			pipeline->pipeline_layout->vk_pipeline_layout,
+			VK_SHADER_STAGE_COMPUTE_BIT,
+			0,
+			sizeof(data),
+			&data);
+	}
 
 	void cmd_bind_descriptor_set(GraphicsPipeline* pipeline, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
 	void cmd_bind_graphics_descriptor_set(PipelineLayout* layout, DescriptorSet* set, uint32_t target_set = 0, std::vector<uint32_t> dynamic_offsets = {});
@@ -319,6 +347,7 @@ struct ShaderModule {
 struct Image;
 struct Sampler;
 struct Buffer;
+struct AccelerationStructure;
 struct DescriptorSet {
 	DescriptorSet(VkDescriptorSet vk_desc_set, VkDescriptorSetAllocateInfo alloc_info,
 		const std::vector<VkDescriptorSetLayoutBinding>& bindings,
@@ -336,6 +365,8 @@ struct DescriptorSet {
 	void bind_consecutive_buffers(uint32_t binding_start, uint32_t binding_count, Buffer** p_buffers);
 	void bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
 	void bind_consecutive_storage_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
+
+	void bind_acceleration_structure(uint32_t binding, AccelerationStructure* as);
 
 	VkDescriptorSet vk_desc_set = VK_NULL_HANDLE;
 	VkDescriptorSetAllocateInfo alloc_info = {};
@@ -507,6 +538,8 @@ struct Buffer {
 
 	void flush();
 
+	VkDeviceAddress device_address();
+
 	BufferBuilder builder;
 	VkBuffer vk_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory vk_memory = VK_NULL_HANDLE;
@@ -553,6 +586,103 @@ struct VertexBuffer {
 
 	VertexBufferBuilder builder;
 	std::vector<Buffer*> buffers;
+};
+
+struct AccelerationStructure;
+struct AccelerationStructureBuilder {
+	AccelerationStructureBuilder();
+
+	struct TrianglesGeometry {
+		TrianglesGeometry(AccelerationStructureBuilder* parent);
+		TrianglesGeometry& vertex_format(VkFormat format);
+		TrianglesGeometry& vertex_stride(VkDeviceSize stride);
+		TrianglesGeometry& vertex_count(uint32_t count);
+		TrianglesGeometry& vertex_data(void* data);
+		// indexed geometry only
+		// https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureBuildRangeInfoKHR.html#:~:text=as%203%20vertices.-,If%20the%20geometry%20uses%20indices,-%2C%20primitiveCount%20%C3%97%203
+		TrianglesGeometry& index_type(VkIndexType type);
+		TrianglesGeometry& triangles_count(uint32_t count);
+		TrianglesGeometry& index_data(void* data);
+		TrianglesGeometry& opaque();
+		TrianglesGeometry& no_duplicate();
+		AccelerationStructureBuilder& end();
+
+		AccelerationStructureBuilder*		_parent = nullptr;
+		VkAccelerationStructureGeometryKHR	_vk_geo = {};
+		uint32_t n_tris = 0;
+		void* _vertex_data = nullptr;
+		void* _index_data = nullptr;
+	};
+
+	struct InstanceGeometry {
+		InstanceGeometry(AccelerationStructureBuilder* parent);
+
+		struct Instance {
+			Instance(InstanceGeometry* parent);
+			Instance& blas(AccelerationStructure* blas);
+			Instance& transform(const void* matrix);  // 3x4 affine transformation matrix. memcpy to https://docs.vulkan.org/refpages/latest/refpages/source/VkTransformMatrixKHR.html
+			Instance& culling(bool enabled);
+			Instance& flip_facing();
+			enum Opacity : uint32_t {
+				Opaque = 0,
+				NoOpaque
+			};
+			Instance& force_opacity(Opacity opa);
+			Instance& custom_index(uint32_t index); // lower 24 bits
+			Instance& mask(uint32_t mask); // lower 8 bits
+
+			InstanceGeometry& end();
+
+			InstanceGeometry* _parent = nullptr;
+			VkAccelerationStructureInstanceKHR	_vk_instance = {}; // goes to VkAccelerationStructureGeometryInstancesDataKHR::data field
+		};
+
+		Instance& add_instance();
+		AccelerationStructureBuilder& end();
+
+		AccelerationStructureBuilder* _parent = nullptr;
+		VkAccelerationStructureGeometryKHR						_vk_geo = {};
+		std::vector<Instance> _instances;
+	};
+
+	TrianglesGeometry& add_triangles_geometry();
+	InstanceGeometry& instance_geometry();
+	enum class Level : uint32_t {
+		Bottom = 0,
+		Top
+	};
+	AccelerationStructureBuilder& level(Level level);
+	AccelerationStructureBuilder& allow_update();
+	enum class Preference : uint32_t {
+		FastTrace = 0,
+		FastBuild,
+		LowMemory
+	};
+	AccelerationStructureBuilder& prefer(Preference pref);
+	AccelerationStructure* build();
+
+	std::vector<TrianglesGeometry>				_tri_geos;
+	InstanceGeometry							_instance_geo = InstanceGeometry(this);
+
+	VkAccelerationStructureBuildGeometryInfoKHR	_vk_build_geo_info = {};
+	VkAccelerationStructureCreateInfoKHR		_vk_create_info = {};
+};
+
+struct AccelerationStructure { // non-updatable
+	AccelerationStructure(AccelerationStructureBuilder& builder);
+	~AccelerationStructure();
+
+	void create_build_as_blas();
+	void create_build_as_tlas();
+
+	void destroy();
+
+	VkDeviceAddress device_address();
+
+	Buffer* backing_buf = nullptr; // where the data of acceleration structure is actually stored
+	Buffer* scratch_buf = nullptr; // scratch data
+	AccelerationStructureBuilder	builder;
+	VkAccelerationStructureKHR vk_as = VK_NULL_HANDLE;
 };
 
 // render pass
