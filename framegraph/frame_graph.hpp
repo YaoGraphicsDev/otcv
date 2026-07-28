@@ -26,7 +26,8 @@ enum class ResourceAccessType { // Compatible pass type: *access types marked wi
 	TextureIn = 0,			// Graphics/Compute	Image	R
 	ColorOut,				// Graphics			Image	W
 	ColorInOut,				// Graphics			Image	R/W
-	// TODO: depth stencil in. Compare-only pipeline may use depth stencil buffer as such
+
+	DepthStencilIn,
 	DepthStencilOut,		// Graphics			Image	W
 	DepthStencilInOut,		// Graphics			Image	R/W
 	
@@ -75,7 +76,7 @@ public:
 	typedef std::function<void(CommandBuffer*)> PostPassFunc;
 	void post_pass_func(PostPassFunc postcb);
 
-	// only calls to RenderingBegin::Attachment::load_store() & RenderingBegin::Attachment::clear_value() will be respected
+	// only calls to RenderingBegin::area() will be respected
 	// Other calls will cause undefined behaviour
 	typedef std::function<void(RenderingBegin&)> RenderAreaFunc;
 	void render_area_func(RenderAreaFunc racb);
@@ -101,6 +102,7 @@ private:
 	std::vector<ResourceHandle>								_in_textures;
 	std::vector<ResourceHandle>								_out_colors;
 	std::vector<std::pair<ResourceHandle, ResourceHandle>>	_inout_colors;
+	ResourceHandle											_in_depth_stencil = FG_INVALID_HANDLE;
 	ResourceHandle											_out_depth_stencil = FG_INVALID_HANDLE;
 	std::pair<ResourceHandle, ResourceHandle>				_inout_depth_stencil = { FG_INVALID_HANDLE, FG_INVALID_HANDLE };
 

@@ -19,6 +19,7 @@ bool Pass::resource_check(ResourceAccessType access_type, ResourceHandle res_id)
 				{ ResourceAccessType::TextureIn },
 				{ ResourceAccessType::ColorOut },
 				{ ResourceAccessType::ColorInOut },
+				{ ResourceAccessType::DepthStencilIn },
 				{ ResourceAccessType::DepthStencilOut },
 				{ ResourceAccessType::DepthStencilInOut },
 			}},
@@ -134,8 +135,19 @@ bool Pass::access(
 		_fg._v_resources[id0].reads.push_back(_id);
 		_fg._v_resources[id1].write = _id;
 	}
+	else if (acc_type == ResourceAccessType::DepthStencilIn) {
+		if (_inout_depth_stencil != std::pair<ResourceHandle, ResourceHandle>({ FG_INVALID_HANDLE, FG_INVALID_HANDLE }) ||
+			_out_depth_stencil != FG_INVALID_HANDLE) {
+			std::cout << "Pass::resource_access() error: Cannot take another image as depth stencil attachment. resource id = " << id0 << std::endl;
+			assert(false);
+			return false;
+		}
+		_in_depth_stencil = id0;
+		_fg._v_resources[id0].reads.push_back(_id);
+	}
 	else if (acc_type == ResourceAccessType::DepthStencilOut) {
-		if (_inout_depth_stencil != std::pair<ResourceHandle, ResourceHandle>({ FG_INVALID_HANDLE, FG_INVALID_HANDLE })) {
+		if (_inout_depth_stencil != std::pair<ResourceHandle, ResourceHandle>({ FG_INVALID_HANDLE, FG_INVALID_HANDLE }) ||
+			_in_depth_stencil != FG_INVALID_HANDLE) {
 			std::cout << "Pass::resource_access() error: Cannot take another image as depth stencil attachment. resource id = " << id0 << std::endl;
 			assert(false);
 			return false;
@@ -144,7 +156,8 @@ bool Pass::access(
 		_fg._v_resources[id0].write = _id;
 	}
 	else if (acc_type == ResourceAccessType::DepthStencilInOut) {
-		if (_out_depth_stencil != FG_INVALID_HANDLE) {
+		if (_out_depth_stencil != FG_INVALID_HANDLE ||
+			_in_depth_stencil != FG_INVALID_HANDLE) {
 			std::cout << "Pass::resource_access() error: Cannot take another image as depth stencil attachment. resource id = " << id0 << ", id1 = " << id1 << std::endl;
 			assert(false);
 			return false;
@@ -539,6 +552,18 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			}
 		}
 
+		// in depth stencil
+		{
+			ResourceHandle v = _passes[p]._in_depth_stencil;
+			if (v != FG_INVALID_HANDLE) {
+				if (v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
+					std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
+					assert(false);
+					return { false, {} };
+				}
+			}
+		}
+
 		// out depth stencil
 		{
 			ResourceHandle v = _passes[p]._out_depth_stencil;
@@ -814,6 +839,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 				case RAT::ColorInOut:
 					virtual_image_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 					break;
+				case RAT::DepthStencilIn:
 				case RAT::DepthStencilInOut:
 					virtual_image_usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 					break;
@@ -1156,6 +1182,34 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		// layout transition
 		transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::ColorAttachment);//, sub_range);
 		attach_ptr->state = ResourceState::ColorAttachment;
+	}
+	// in depth stencil
+	{
+		if (pass._in_depth_stencil != FG_INVALID_HANDLE) {
+			ResourceHandle v_id = pass._in_depth_stencil;
+			ResourceHandle p_id = id_v2p(v_id);
+			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
+			PhysicalImagePtr attach_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+
+			// attachment setup
+			// const VkImageSubresourceRange& sub_range = pass._img_subrange_map.at(v_id);
+			RenderingBegin::Attachment& attach_setup = render_begin
+				.depth_stencil_attachment()
+				//.image_view(null_range(sub_range) ? attach_ptr->resource->vk_view : attach_ptr->resource->view_of_subresource(sub_range))
+				.image_view(attach_ptr->resource->vk_view)
+				.image_layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+			auto iter = pass._load_store_cbs.find(v_id);
+			if (iter != pass._load_store_cbs.end() && iter->second) {
+				iter->second(attach_setup);
+			}
+			attach_setup.end();
+
+			// layout transition
+			if (attach_ptr->state != ResourceState::DepthStencilAttachmentRead) {
+				transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::DepthStencilAttachmentRead);//, sub_range);
+				attach_ptr->state = ResourceState::DepthStencilAttachmentRead;
+			}
+		}
 	}
 	// out depth stencil
 	{

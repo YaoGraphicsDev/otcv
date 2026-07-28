@@ -96,7 +96,9 @@ struct NaiveExpandableDescriptorPool {
 		for (auto& p : desc_required) {
 			uint32_t type = p.first;
 			uint32_t capacity = p.second;
-			builder.descriptor_type_capacity((VkDescriptorType)type, capacity);
+			if (capacity > 0) {
+				builder.descriptor_type_capacity((VkDescriptorType)type, capacity);
+			}
 		}
 		_pools.push_back(new otcv::DescriptorPool(builder));
 

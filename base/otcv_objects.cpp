@@ -2168,11 +2168,14 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipelineBuilder& builder) {
 			if (pc_size == 0) {
 				return;
 			}
-			VkPushConstantRange range{};
-			range.offset = pc_offset;
-			range.size = pc_size;
-			range.stageFlags = stage;
-			push_constant_ranges[pc_member.first] = range;
+			push_constant_ranges[pc_member.first].offset = pc_offset;
+			push_constant_ranges[pc_member.first].size = pc_size;
+			push_constant_ranges[pc_member.first].stageFlags |= stage;
+			// VkPushConstantRange range{};
+			// range.offset = pc_offset;
+			// range.size = pc_size;
+			// range.stageFlags = stage;
+			// push_constant_ranges[pc_member.first] = range;
 		}
 	};
 

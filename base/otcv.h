@@ -99,7 +99,9 @@ enum class ResourceState {
 	ComputeSample,
 
 	ColorAttachment,
-	DepthStencilAttachment, // Test & Write, might need to differentiate these 2 operations in the future
+	DepthStencilAttachment, // Test & Write
+	DepthStencilAttachmentRead, // Test only
+
 	// check out SaschaWillems' shadowmapping example for details. subpass dependency
 
 	PresentAvailableForTransferDst,
@@ -174,13 +176,18 @@ struct CommandBuffer {
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
 	void cmd_push_constant(ComputePipeline* pipeline, const std::string& name, const void* data);
 
-	// this call requires the same push constant block declared in both vertex and fragment shader, with the same offset
+	/*	
+	* This call works in 3 ways:
+	*	1. the same push constant block declared in both vertex and fragment shader, with the same offset. Set stage to include both stages
+	*	2. push constant block delcared in vertex shader only, set stage to vertex
+	*	3. push constant block declared in fragment shader only, set stage to fragment
+	*/
 	template<typename PC>
-	void cmd_push_constant(GraphicsPipeline* pipeline, const PC& data) {
+	void cmd_push_constant(GraphicsPipeline* pipeline, const PC& data, VkShaderStageFlags stage = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT) {
 		vkCmdPushConstants(
 			this->vk_command_buffer,
 			pipeline->pipeline_layout->vk_pipeline_layout,
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			stage,
 			0,
 			sizeof(data),
 			&data);
