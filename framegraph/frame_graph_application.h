@@ -37,8 +37,12 @@ public:
 		return fg;
 	}
 
-	uint32_t current_frame() {
-		return _current_frame;
+	uint32_t frame_slot() {
+		return _frame_slot;
+	}
+
+	uint32_t frame_count() {
+		return _frame_count;
 	}
 
 	typedef std::function<void(fg::Application*)> SyncFrameUpdateFunc;
@@ -95,7 +99,8 @@ private:
 	FGBuildFunc fg_build_cb = nullptr;
 	bool fg_need_rebuild = false;
 
-	uint32_t _current_frame = 0;
+	uint32_t _frame_slot = 0;
+	uint32_t _frame_count = 0;
 };
 
 }

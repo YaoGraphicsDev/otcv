@@ -84,7 +84,8 @@ void Application::run() {
         glfwPollEvents();
         if (!window_minimized) {
             draw_frame();
-            _current_frame = (_current_frame + 1) % frame_ctxs.size();
+            _frame_count++;
+            _frame_slot = (_frame_count) % frame_ctxs.size();
         }
         else {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -113,7 +114,7 @@ void Application::build_framegraph() {
 }
 
 void Application::draw_frame() {
-    FrameContext& f = frame_ctxs[_current_frame];
+    FrameContext& f = frame_ctxs[_frame_slot];
     f.frame_fence->wait();
 
     if (frame_update_cb) {
@@ -149,7 +150,7 @@ void Application::draw_frame() {
         return;
     }
 
-    if (!fg->record(fg_record_inputs[_current_frame])) {
+    if (!fg->record(fg_record_inputs[_frame_slot])) {
         assert(false);
         return;
     }
@@ -161,7 +162,7 @@ void Application::draw_frame() {
     // put framegraph commands in a batch
     otcv::QueueSubmit submit;
     otcv::QueueSubmit::Batch& batch = submit.batch();
-    for (auto pass_input : fg_record_inputs[_current_frame].ordered_passes) {
+    for (auto pass_input : fg_record_inputs[_frame_slot].ordered_passes) {
         batch.add_command_buffer(pass_input.cmd_buf);
     }
     batch.end();
@@ -192,6 +193,9 @@ void Application::draw_frame() {
     // submit all
     _otcv_context.queue->submit(submit);
 
+    img_allocator->end_frame_recording(f.frame_fence);
+    buf_allocator->end_frame_recording(f.frame_fence);
+
     otcv::QueuePresent present;
     present
         .image_index(swapchain_image_id)
@@ -217,10 +221,8 @@ void Application::draw_frame() {
         return;
     }
 
-    img_allocator->end_frame_recording(f.frame_fence);
-    buf_allocator->end_frame_recording(f.frame_fence);
-    std::cout << "img_allocator capacity = " << img_allocator->capacity() << ", size = " << img_allocator->alive_count() << std::endl;
-    std::cout << "buf_allocator capacity = " << buf_allocator->capacity() << ", size = " << buf_allocator->alive_count() << std::endl;
+    std::cout << "img_allocator capacity = " << img_allocator->capacity() << std::endl;
+    std::cout << "buf_allocator capacity = " << buf_allocator->capacity() << std::endl;
 }
 
 void Application::copy_backbuffer_commands(otcv::CommandBuffer* cmd_buf, fg::PhysicalImagePtr backbuffer, uint32_t image_id) {

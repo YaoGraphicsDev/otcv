@@ -70,6 +70,22 @@ bool Pass::resource_check(ResourceAccessType access_type, ResourceHandle res_id)
 		return false;
 	}
 
+	if (res.imported) {
+		if ((access_type == ResourceAccessType::StorageImageInOut && _type == PassType::Compute) ||
+			(access_type == ResourceAccessType::TextureIn && _type == PassType::Graphics)) {
+			// only support these imported types and passes combinations for now. Add support for other types if necessary in the future
+		}
+		else {
+			std::cout << "Pass::resource_check() error: Unsupported imported type: "
+				<< "pass type = " << (int)_type
+				<< ", resource_type = " << (int)res.type
+				<< ", access type = " << (int)access_type
+				<< std::endl;
+			assert(false);
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -82,13 +98,27 @@ bool Pass::access(
 		assert(false);
 		return false;
 	}
-	if (id1 != FG_INVALID_HANDLE && id1 >= _fg._v_resources.size()) {
+	if (id1 != FG_INVALID_HANDLE &&
+		id1 >= _fg._v_resources.size()) {
 		std::cout << "Pass::resource_access() error: invalid id1 = " << id1 << std::endl;
 		assert(false);
 		return false;
 	}
 	if (id1 == id0) {
 		std::cout << "Pass::resource_access() error: id0 and id1 should point to different virtual resources" << std::endl;
+		assert(false);
+		return false;
+	}
+	if (id1 != FG_INVALID_HANDLE &&
+		(_fg._v_resources.at(id0).imported ^ _fg._v_resources.at(id1).imported)) {
+		std::cout << "Pass::resource_access() error: virtual resources pointed by id0 and id1 have to be both either imported or non-imported" << std::endl;
+		assert(false);
+		return false;
+	}
+	if (id1 != FG_INVALID_HANDLE &&
+		_fg._v_resources.at(id0).imported &&
+		_fg._v_resources.at(id0).imported_id != _fg._v_resources.at(id1).imported_id) {
+		std::cout << "Pass::resource_access() error: virtual resources pointed by id0 and id1 must point to that same imported resource" << std::endl;
 		assert(false);
 		return false;
 	}
@@ -306,11 +336,70 @@ ResourceHandle FrameGraph::add_resource(const std::string& name, const BufferBui
 	return id;
 }
 
+ResourceHandle FrameGraph::import_resource(const std::string& name, Image* img, ResourceState initial_state) {
+	if (_state != State::Building) {
+		std::cout << "FrameGraph::add_resource() error: reset graph before building" << std::endl;
+		assert(false);
+		return FG_INVALID_HANDLE;
+	}
+
+	ResourceHandle i_id = _i_resources.size();
+	ImportedResource& i_res = _i_resources.emplace_back();
+	i_res.id = i_id;
+	i_res.type = ResourceType::Image;
+	i_res.img = img;
+	i_res.state = initial_state;
+
+	ResourceHandle v_id = _v_resources.size();
+	VirtualResource& v_res = _v_resources.emplace_back();
+	v_res.id = v_id;
+	v_res.type = ResourceType::Image;
+	v_res.name = name;
+	v_res.imported = true;
+	v_res.imported_id = i_id;
+	return v_id;
+}
+
+ResourceHandle FrameGraph::version_resource(ResourceHandle id) {
+	if (_state != State::Building) {
+		std::cout << "FrameGraph::add_resource() error: reset graph before building" << std::endl;
+		assert(false);
+		return FG_INVALID_HANDLE;
+	}
+	if (id >= _v_resources.size()) {
+		std::cout << "Framegraph::version_resource() error: invalid id = " << id << std::endl;
+		assert(false);
+		return false;
+	}
+
+	if (_v_resources.at(id).imported) {
+		ResourceHandle new_id = _v_resources.size();
+		_v_resources.push_back(_v_resources.at(id));
+		_v_resources.back().id = new_id;
+		_v_resources.back().name += "_v_";
+		return new_id;
+	}
+	else {
+		if (_v_resources.at(id).type == ResourceType::Image) {
+			return add_resource(_v_resources.at(id).name + "_v_", _v_resources.at(id).img_builder);
+		}
+		else if (_v_resources.at(id).type == ResourceType::Buffer) {
+			return add_resource(_v_resources.at(id).name + "_v_", _v_resources.at(id).buf_builder);
+		}
+		else {
+			assert(false);
+			return FG_INVALID_HANDLE;
+		}
+	}
+}
+
 ImageBuilder FrameGraph::get_img_builder(ResourceHandle v_id) {
+	assert(!_v_resources.at(v_id).imported);
 	return _v_resources.at(v_id).img_builder;
 }
 
 BufferBuilder FrameGraph::get_buf_builder(ResourceHandle v_id) {
+	assert(!_v_resources.at(v_id).imported);
 	return _v_resources.at(v_id).buf_builder;
 }
 
@@ -363,17 +452,29 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 	for (auto& p : _passes) {
 		_dag->add_node();
 	}
+
 	for (auto& res : _v_resources) {
 		for (PassHandle p_id : res.reads) {
-			_dag->add_dep(p_id, res.write);
+			if (res.write != FG_INVALID_HANDLE) { // some imported resource may not have any pass write to it
+				_dag->add_dep(p_id, res.write);
+			}
 		}
 	}
+
 	if (_backbuffer_id == FG_INVALID_HANDLE) {
 		std::cout << "Framegraph::compile() failed: backbuffer not set." << std::endl;
 		assert(false);
 		return { false, {} };
 	}
-	_dag->end_at(_v_resources[_backbuffer_id].write);
+	_dag->add_end(_v_resources[_backbuffer_id].write);
+
+	for (auto& res : _v_resources) {
+		if (res.imported && res.reads.empty()) {
+			assert(res.write != FG_INVALID_HANDLE);
+			// an imported resource, that no one reads. The end
+			_dag->add_end(res.write);
+		}
+	}
 
 	// topological sort
 	std::string sort_error;
@@ -480,10 +581,10 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			add_storage_image_binding(storage_image_count++);
 		}
 		_pass_desc_set_layouts[p_id].reset(new DescriptorSetLayout(bindings));
-		
-		std::vector<CacheEntryHandle> textures(pass._in_textures.size(), FG_INVALID_HANDLE);
-		std::vector<CacheEntryHandle> ssbos(ssbo_count, FG_INVALID_HANDLE);
-		std::vector<CacheEntryHandle> storage_images(storage_image_count, FG_INVALID_HANDLE);
+
+		std::vector<CacheEntryHandle> textures(pass._in_textures.size(), FG_INVALID_CACHE_ENTRY_HANDLE);
+		std::vector<CacheEntryHandle> ssbos(ssbo_count, FG_INVALID_CACHE_ENTRY_HANDLE);
+		std::vector<CacheEntryHandle> storage_images(storage_image_count, FG_INVALID_CACHE_ENTRY_HANDLE);
 		for (FrameRecordInput& input : record_inputs) {
 			// command buffer and descriptor set allocation
 			PassOrder order = _passes[p_id]._exec_order;
@@ -500,6 +601,9 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 	std::vector<std::vector<ResourceHandle>> l2v_list; // logical -> virtual
 
 	auto new_logical_resource = [&](ResourceHandle v) -> bool {
+		if (_v_resources.at(v).imported) {
+			return true;
+		}
 		if (v == FG_INVALID_HANDLE) {
 			std::cout << "Framegraph::compile() error: invalid virtual resource id" << std::endl;
 			assert(false);
@@ -516,6 +620,9 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 	};
 
 	auto merge_virtual_resource = [&](ResourceHandle in_v, ResourceHandle out_v) -> bool {
+		if (_v_resources.at(in_v).imported) {
+			return true;
+		}
 		if (in_v == FG_INVALID_HANDLE) {
 			std::cout << "Framegraph::compile() error: invalid input virtual resource id" << std::endl;
 			assert(false);
@@ -555,24 +662,20 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 		// in depth stencil
 		{
 			ResourceHandle v = _passes[p]._in_depth_stencil;
-			if (v != FG_INVALID_HANDLE) {
-				if (v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
-					std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
-					assert(false);
-					return { false, {} };
-				}
+			if (v != FG_INVALID_HANDLE && !_v_resources.at(v).imported && v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
+				std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
+				assert(false);
+				return { false, {} };
 			}
 		}
 
 		// out depth stencil
 		{
 			ResourceHandle v = _passes[p]._out_depth_stencil;
-			if (v != FG_INVALID_HANDLE) {
-				if (!new_logical_resource(v)) {
-					std::cout << "Framegraph::compile(): error: pass id = " << p << " cannot allocate new logical resource for out depth stencil" << std::endl;
-					assert(false);
-					return { false, {} };
-				}
+			if (v != FG_INVALID_HANDLE && !new_logical_resource(v)) {
+				std::cout << "Framegraph::compile(): error: pass id = " << p << " cannot allocate new logical resource for out depth stencil" << std::endl;
+				assert(false);
+				return { false, {} };
 			}
 		}
 
@@ -587,17 +690,15 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 
 		// inout depth stencil
 		auto v_pair = _passes[p]._inout_depth_stencil;
-		if (v_pair.first != FG_INVALID_HANDLE && v_pair.second != FG_INVALID_HANDLE) {
-			if (!merge_virtual_resource(v_pair.first, v_pair.second)) {
-				std::cout << "Framegraph::compile(): error: pass id = " << p << " cannot merge inout depth stencil to one logical resource" << std::endl;
-				assert(false);
-				return { false, {} };
-			}
+		if (v_pair.first != FG_INVALID_HANDLE && v_pair.second != FG_INVALID_HANDLE && merge_virtual_resource(v_pair.first, v_pair.second)) {
+			std::cout << "Framegraph::compile(): error: pass id = " << p << " cannot merge inout depth stencil to one logical resource" << std::endl;
+			assert(false);
+			return { false, {} };
 		}
 
 		// input textures
 		for (ResourceHandle v : _passes[p]._in_textures) {
-			if (v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
+			if (!_v_resources.at(v).imported && v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
 				std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
 				assert(false);
 				return { false, {} };
@@ -606,7 +707,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 
 		// input storage image
 		for (ResourceHandle v : _passes[p]._in_storage_image) {
-			if (v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
+			if (!_v_resources.at(v).imported && v2l_map.count(v) == 0) { // some pass has got to have output this image before this pass
 				std::cout << "Framegraph::compile(): error: virtual resource id = " << v << " has not yet been produced by a previous pass. current pass id = " << p << std::endl;
 				assert(false);
 				return { false, {} };
@@ -742,6 +843,7 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 		}
 		else {
 			assert(false);
+			return false;
 		}
 	};
 
@@ -982,8 +1084,8 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			}
 		}
 		
-		_img_resource_ids.resize(n_physical_images, FG_INVALID_HANDLE);
-		_buf_resource_ids.resize(n_physical_buffers, FG_INVALID_HANDLE);
+		_img_resource_ids.resize(n_physical_images, FG_INVALID_CACHE_ENTRY_HANDLE);
+		_buf_resource_ids.resize(n_physical_buffers, FG_INVALID_CACHE_ENTRY_HANDLE);
 	}
 
 	_state = State::Compiled;
@@ -1006,38 +1108,48 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	}
 
 	// textures. Send into execution lambda through PassContext
-
-	std::vector<CacheEntryHandle> tex_cache_ids;
+	std::vector<CacheEntryHandle>	tex_keys;
+	std::vector<Image*>				tex_imgs;
 	for (ResourceHandle v_id : pass._in_textures) {
-		ResourceHandle p_id = id_v2p(v_id);
-		assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input textures must have been allocated. Guaranteed by compile()
-		tex_cache_ids.push_back(_img_resource_ids[p_id]);
-		PhysicalImagePtr tex_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+		Image* img = nullptr;
+		ResourceState* state = nullptr;
+
+		if (_v_resources.at(v_id).imported) {
+			img = _i_resources.at(_v_resources.at(v_id).imported_id).img;
+			state = &_i_resources.at(_v_resources.at(v_id).imported_id).state;
+			tex_keys.push_back(img);
+		}
+		else {
+			// transient
+			ResourceHandle p_id = id_v2p(v_id);
+			assert(_img_resource_ids.at(p_id) != FG_INVALID_CACHE_ENTRY_HANDLE); // input textures must have been allocated. Guaranteed by compile()
+			PhysicalImagePtr tex_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+			img = tex_ptr->resource;
+			state = &tex_ptr->state;
+			tex_keys.push_back(_img_resource_ids[p_id]);
+		}
+		tex_imgs.push_back(img);
 
 		// layout transition
-		if (tex_ptr->state != ResourceState::FragSample) {
-			transition_image_state(cmd, tex_ptr->resource, tex_ptr->state, ResourceState::FragSample);//, pass._img_subrange_map.at(v_id));
-			tex_ptr->state = ResourceState::FragSample;
+		if (*state != ResourceState::FragSample) {
+			transition_image_state(cmd, img, *state, ResourceState::FragSample);//, pass._img_subrange_map.at(v_id));
+			*state = ResourceState::FragSample;
 		}
 	}
 
 	// check if texture descriptors need to bind to a difference set of images
-	assert(tex_cache_ids.size() == input.textures.size()); // guaranteed by compile()
-	if (tex_cache_ids != input.textures) {
+	assert(tex_keys.size() == input.textures.size()); // guaranteed by compile()
+	if (tex_keys != input.textures) {
 		// different set of images for textures. Update descriptor set
-		std::vector<Image*> new_textures;
-		for (CacheEntryHandle& id : tex_cache_ids) {
-			new_textures.push_back(_img_allocator->storage(id)->resource);
-		}
-		input.desc_set->bind_consecutive_sampled_images(TextureBaseBinding, new_textures.size(), new_textures.data());
-		std::copy(tex_cache_ids.begin(), tex_cache_ids.end(), input.textures.begin());
+		input.desc_set->bind_consecutive_sampled_images(TextureBaseBinding, tex_imgs.size(), tex_imgs.data());
+		std::copy(tex_keys.begin(), tex_keys.end(), input.textures.begin());
 	}
 
 	// SSBOs
 	std::vector<CacheEntryHandle> ssbo_cache_ids;
 	for (ResourceHandle v_id : pass._in_ssbo) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
 		ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1064,7 +1176,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	std::vector<CacheEntryHandle> vb_cache_ids;
 	for (ResourceHandle v_id : pass._in_vertices) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 		vb_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1079,7 +1191,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	std::vector<CacheEntryHandle> ib_cache_ids;
 	for (ResourceHandle v_id : pass._in_indices) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 		ib_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1094,7 +1206,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	std::vector<CacheEntryHandle> idb_cache_ids;
 	for (ResourceHandle v_id : pass._in_indirect) {
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+		assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 		idb_cache_ids.push_back(_buf_resource_ids[p_id]);
 		PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1136,42 +1248,27 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 
 	// out color attachments
 	for (ResourceHandle v_id : pass._out_colors) {
-		ResourceHandle p_id = id_v2p(v_id);
-		CacheEntryHandle cache_id = _img_allocator->acquire(_l_resources[id_v2l(v_id)].img_builder);
-		_img_resource_ids[p_id] = cache_id;
-		PhysicalImagePtr attach_ptr = _img_allocator->storage(cache_id);
+		Image* img = nullptr;
+		ResourceState* state = nullptr;
 
-		// attachment steup
-		// const VkImageSubresourceRange& sub_range = pass._img_subrange_map.at(v_id);
-		RenderingBegin::Attachment& attach_setup = render_begin
-			.color_attachment()
-			// .image_view(null_range(sub_range) ? attach_ptr->resource->vk_view : attach_ptr->resource->view_of_subresource(sub_range))
-			.image_view(attach_ptr->resource->vk_view)
-			.image_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-		auto iter = pass._load_store_cbs.find(v_id);
-		if (iter != pass._load_store_cbs.end() && iter->second) {
-			iter->second(attach_setup);
+		if (_v_resources.at(v_id).imported) {
+			ResourceHandle imported_id = _v_resources.at(v_id).imported_id;
+			img = _i_resources.at(imported_id).img;
+			state = &_i_resources.at(imported_id).state;
 		}
-		attach_setup.end();
-
-		// layout transition
-		transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::ColorAttachment);//, sub_range);
-		attach_ptr->state = ResourceState::ColorAttachment;
-	}
-	// inout color attachments
-	for (auto v_id_pair : pass._inout_colors) {
-		assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout color virtual id pair must point to the same physical id. Guaranteed by compile()
-		ResourceHandle v_id = v_id_pair.first;
-		ResourceHandle p_id = id_v2p(v_id);
-		assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
-		PhysicalImagePtr attach_ptr = _img_allocator->storage(_img_resource_ids[p_id]); 
+		else {
+			ResourceHandle p_id = id_v2p(v_id);
+			CacheEntryHandle cache_key = _img_allocator->acquire(_l_resources[id_v2l(v_id)].img_builder);
+			_img_resource_ids[p_id] = cache_key;
+			PhysicalImagePtr attach_ptr = _img_allocator->storage(cache_key);
+			img = attach_ptr->resource;
+			state = &attach_ptr->state;
+		}
 
 		// attachment setup
-		// const VkImageSubresourceRange& sub_range = pass._img_subrange_map.at(v_id);
 		RenderingBegin::Attachment& attach_setup = render_begin
 			.color_attachment()
-			// .image_view(null_range(sub_range) ? attach_ptr->resource->vk_view : attach_ptr->resource->view_of_subresource(sub_range))
-			.image_view(attach_ptr->resource->vk_view)
+			.image_view(img->vk_view)
 			.image_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 		auto iter = pass._load_store_cbs.find(v_id);
 		if (iter != pass._load_store_cbs.end() && iter->second) {
@@ -1180,15 +1277,49 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		attach_setup.end();
 
 		// layout transition
-		transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::ColorAttachment);//, sub_range);
-		attach_ptr->state = ResourceState::ColorAttachment;
+		transition_image_state(cmd, img, *state, ResourceState::ColorAttachment);//, sub_range);
+		*state = ResourceState::ColorAttachment;
+	}
+	// inout color attachments
+	for (auto& [id0, id1] : pass._inout_colors) {
+		Image* img = nullptr;
+		ResourceState* state = nullptr;
+
+		if (_v_resources.at(id0).imported) {
+			ResourceHandle imported_id = _v_resources.at(id0).imported_id;
+			img = _i_resources.at(imported_id).img;
+			state = &_i_resources.at(imported_id).state;
+		}
+		else {
+			assert(id_v2p(id0) == id_v2p(id1)); // inout color virtual id pair must point to the same physical id. Guaranteed by compile()
+			ResourceHandle p_id = id_v2p(id0);
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
+			PhysicalImagePtr attach_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+			img = attach_ptr->resource;
+			state = &attach_ptr->state;
+		}
+
+		// attachment setup
+		RenderingBegin::Attachment& attach_setup = render_begin
+			.color_attachment()
+			.image_view(img->vk_view)
+			.image_layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		auto iter = pass._load_store_cbs.find(id0);
+		if (iter != pass._load_store_cbs.end() && iter->second) {
+			iter->second(attach_setup);
+		}
+		attach_setup.end();
+
+		// layout transition
+		transition_image_state(cmd, img, *state, ResourceState::ColorAttachment);//, sub_range);
+		*state = ResourceState::ColorAttachment;
 	}
 	// in depth stencil
 	{
 		if (pass._in_depth_stencil != FG_INVALID_HANDLE) {
 			ResourceHandle v_id = pass._in_depth_stencil;
 			ResourceHandle p_id = id_v2p(v_id);
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
 			PhysicalImagePtr attach_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
 
 			// attachment setup
@@ -1244,7 +1375,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 		assert(id_v2p(pass._inout_depth_stencil.first) == id_v2p(pass._inout_depth_stencil.second)); // inout depth stencil virtual id pair must point to the same physical id. Guaranteed by compile()
 		ResourceHandle v_id = pass._inout_depth_stencil.first;
 		ResourceHandle p_id = id_v2p(v_id);
-		assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
+		assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
 		PhysicalImagePtr attach_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
 
 		// attachment setup
@@ -1301,7 +1432,7 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 		std::vector<CacheEntryHandle> tex_cache_ids;
 		for (ResourceHandle v_id : pass._in_textures) {
 			ResourceHandle p_id = id_v2p(v_id);
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input textures must have been allocated. Guaranteed by compile()
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input textures must have been allocated. Guaranteed by compile()
 			tex_cache_ids.push_back(_img_resource_ids[p_id]);
 			PhysicalImagePtr tex_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
 
@@ -1337,7 +1468,7 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 		// in SSBO
 		for (ResourceHandle v_id : pass._in_ssbo) {
 			ResourceHandle p_id = id_v2p(v_id);
-			assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+			assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
 			ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1364,7 +1495,7 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 			assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
 			ResourceHandle v_id = v_id_pair.first;
 			ResourceHandle p_id = id_v2p(v_id);
-			assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output ssbos must have been allocated. Guaranteed by compile()
+			assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output ssbos must have been allocated. Guaranteed by compile()
 			ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1387,13 +1518,15 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 	}
 	// storage images
 	{
-		std::vector<CacheEntryHandle> image_cache_ids;
+		std::vector<CacheEntryHandle>	storage_image_keys;
+		std::vector<Image*>				storage_image_imgs;
 		// in storage image
 		for (ResourceHandle v_id : pass._in_storage_image) {
 			ResourceHandle p_id = id_v2p(v_id);
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
-			image_cache_ids.push_back(_img_resource_ids[p_id]);
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input SSBOs must have been allocated. Guaranteed by compile()
+			storage_image_keys.push_back(_img_resource_ids[p_id]);
 			PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+			storage_image_imgs.push_back(img_ptr->resource);
 
 			// layout transition
 			if (img_ptr->state != ResourceState::ComputeStorageRead) {
@@ -1406,37 +1539,58 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 			ResourceHandle p_id = id_v2p(v_id);
 			CacheEntryHandle cache_id = _img_allocator->acquire(_l_resources[id_v2l(v_id)].img_builder);
 			_img_resource_ids[p_id] = cache_id;
-			image_cache_ids.push_back(_img_resource_ids[p_id]);
+			storage_image_keys.push_back(_img_resource_ids[p_id]);
 			PhysicalImagePtr img_ptr = _img_allocator->storage(cache_id);
+			storage_image_imgs.push_back(img_ptr->resource);
 
 			// layout transition
 			transition_image_state(cmd, img_ptr->resource, img_ptr->state, ResourceState::ComputeStorageWrite);// , pass._img_subrange_map.at(v_id));
 			img_ptr->state = ResourceState::ComputeStorageWrite;
 		}
 		// inout storage image
-		for (auto v_id_pair : pass._inout_storage_image) {
-			assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
-			ResourceHandle v_id = v_id_pair.first;
-			ResourceHandle p_id = id_v2p(v_id);
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // input/output ssbos must have been allocated. Guaranteed by compile()
-			image_cache_ids.push_back(_img_resource_ids[p_id]);
-			PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+		for (auto& [id0, id1] : pass._inout_storage_image) {
+			Image* img = nullptr;
+			ResourceState* state = nullptr;
+			if (_v_resources.at(id0).imported) {
+				ResourceHandle imported_id = _v_resources.at(id0).imported_id;
+				img = _i_resources.at(imported_id).img;
+				state = &_i_resources.at(imported_id).state;
+				storage_image_keys.push_back(img);
+			}
+			else {
+				assert(id_v2p(id0) == id_v2p(id1)); // inout storage image virtual id pair must point to the same physical id. Guaranteed by compile()
+				ResourceHandle p_id = id_v2p(id0);
+				assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output color attachment must have been allocated. Guaranteed by compile()
+				PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+				img = img_ptr->resource;
+				state = &img_ptr->state;
+				storage_image_keys.push_back(_img_resource_ids[p_id]);
+			}
+			storage_image_imgs.push_back(img);
 
 			// layout transition
-			transition_image_state(cmd, img_ptr->resource, img_ptr->state, ResourceState::ComputeStorage);// , pass._img_subrange_map.at(v_id));
-			img_ptr->state = ResourceState::ComputeStorage;
+			transition_image_state(cmd, img, *state, ResourceState::ComputeStorage);// , pass._img_subrange_map.at(v_id));
+			*state = ResourceState::ComputeStorage;
 		}
+		//for (auto v_id_pair : pass._inout_storage_image) {
+		//	assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
+		//	ResourceHandle v_id = v_id_pair.first;
+		//	ResourceHandle p_id = id_v2p(v_id);
+		//	assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output ssbos must have been allocated. Guaranteed by compile()
+		//	image_cache_ids.push_back(_img_resource_ids[p_id]);
+		//	PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
+
+		//	// layout transition
+		//	transition_image_state(cmd, img_ptr->resource, img_ptr->state, ResourceState::ComputeStorage);// , pass._img_subrange_map.at(v_id));
+		//	img_ptr->state = ResourceState::ComputeStorage;
+		//}
 
 		// check if ssbo descriptors need to bind to a difference set of images
-		assert(image_cache_ids.size() == input.storage_images.size());
-		if (image_cache_ids != input.storage_images) {
+		assert(storage_image_keys.size() == input.storage_images.size());
+		if (storage_image_keys != input.storage_images) {
 			// different set of images for storage images. Update descriptor set
-			std::vector<Image*> new_storage_images;
-			for (CacheEntryHandle& id : image_cache_ids) {
-				new_storage_images.push_back(_img_allocator->storage(id)->resource);
-			}
-			input.desc_set->bind_consecutive_storage_images(StorageImageBaseBinding, new_storage_images.size(), new_storage_images.data());
-			std::copy(image_cache_ids.begin(), image_cache_ids.end(), input.storage_images.begin());
+			input.desc_set->bind_consecutive_storage_images(StorageImageBaseBinding, storage_image_imgs.size(), storage_image_imgs.data());
+			std::copy(storage_image_keys.begin(), storage_image_keys.end(), input.storage_images.begin());
 		}
 	}
 
@@ -1476,7 +1630,7 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 	for (ResourceHandle v_id : pass._in_transfer) {
 		ResourceHandle p_id = id_v2p(v_id);
 		if (_v_resources[v_id].type == ResourceType::Image) {
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 			img_cache_ids.push_back(_img_resource_ids[p_id]);
 			PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
 
@@ -1487,7 +1641,7 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 			}
 		}
 		else if (_v_resources[v_id].type == ResourceType::Buffer) {
-			assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+			assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 			buf_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1534,7 +1688,7 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 		ResourceHandle v_id = v_id_pair.first;
 		ResourceHandle p_id = id_v2p(v_id);
 		if (_v_resources[v_id].type == ResourceType::Image) {
-			assert(_img_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+			assert(_img_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 			img_cache_ids.push_back(_img_resource_ids[p_id]);
 			PhysicalImagePtr img_ptr = _img_allocator->storage(_img_resource_ids[p_id]);
 
@@ -1545,7 +1699,7 @@ bool FrameGraph::record_transfer_pass(FrameRecordInput::PassInput& input, PassHa
 			}
 		}
 		else if (_v_resources[v_id].type == ResourceType::Buffer) {
-			assert(_buf_resource_ids[p_id] != FG_INVALID_HANDLE); // must have been allocated. Guaranteed by compile()
+			assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // must have been allocated. Guaranteed by compile()
 			buf_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
 
@@ -1640,7 +1794,7 @@ bool FrameGraph::record(FrameRecordInput& input) {
 
 void DAG::clear() {
 	nodes.clear();
-	end_node = FG_INVALID_HANDLE;
+	end_nodes.clear();
 }
 
 DAG::NodeHandle DAG::add_node() {
@@ -1657,23 +1811,32 @@ bool DAG::add_dep(NodeHandle node, NodeHandle dep_on) {
 	return true;
 }
 
-void DAG::end_at(NodeHandle node) {
-	end_node = node;
+bool DAG::add_end(NodeHandle node) {
+	if (node >= nodes.size()) {
+		assert(false);
+		return false;
+	}
+
+	if (std::find(end_nodes.begin(), end_nodes.end(), node) == end_nodes.end()) {
+		end_nodes.push_back(node);
+	}
+
+	return true;
 }
 
 bool DAG::sort(std::string& error, std::vector<NodeHandle>& ordered) {
 	error.clear();
 	ordered.clear();
 
-	if (end_node == FG_INVALID_HANDLE) {
-		error = "DAG::sort() failed: no end node specified.";
+	if (end_nodes.empty()) {
+		error = "DAG::sort() failed: no end nodes specified.";
 		return false;
 	}
 
-	if (end_node >= nodes.size()) {
-		error = "DAG::sort() failed: end node handle is invalid.";
-		return false;
-	}
+	//if (end_node >= nodes.size()) {
+	//	error = "DAG::sort() failed: end node handle is invalid.";
+	//	return false;
+	//}
 
 	enum VisitState : uint8_t {
 		Unvisited,
@@ -1691,42 +1854,53 @@ bool DAG::sort(std::string& error, std::vector<NodeHandle>& ordered) {
 	std::vector<NodeHandle> postorder;
 	postorder.reserve(nodes.size());
 
-	stack.push({ end_node, 0 });
-
-	while (!stack.empty()) {
-		StackEntry& top = stack.top();
-		NodeHandle u = top.node;
-
-		if (u >= nodes.size()) {
-			error = "DAG::sort() failed: invalid node handle.";
+	for (NodeHandle end_node : end_nodes) {
+		if (end_node >= nodes.size()) {
+			error = "DAG::sort() failed: invalid end node.";
 			return false;
 		}
 
-		if (state[u] == Unvisited)
-			state[u] = Visiting;
-
-		const Node& node = nodes[u];
-
-		if (top.dep_id < node.deps.size()) {
-			NodeHandle v = node.deps[top.dep_id++];
-
-			if (v >= nodes.size()) {
-				error = "DAG::sort() failed: invalid dependency handle.";
-				return false;
-			}
-
-			if (state[v] == Unvisited) {
-				stack.push({ v, 0 });
-			}
-			else if (state[v] == Visiting) {
-				error = "DAG::sort() failed: cycle detected.";
-				return false;
-			}
+		if (state[end_node] != Unvisited) {
+			continue;
 		}
-		else {
-			state[u] = Visited;
-			postorder.push_back(u);
-			stack.pop();
+
+		stack.push({ end_node, 0 });
+
+		while (!stack.empty()) {
+			StackEntry& top = stack.top();
+			NodeHandle u = top.node;
+
+			if (u >= nodes.size()) {
+				error = "DAG::sort() failed: invalid node handle.";
+				return false;
+			}
+
+			if (state[u] == Unvisited)
+				state[u] = Visiting;
+
+			const Node& node = nodes[u];
+
+			if (top.dep_id < node.deps.size()) {
+				NodeHandle v = node.deps[top.dep_id++];
+
+				if (v >= nodes.size()) {
+					error = "DAG::sort() failed: invalid dependency handle.";
+					return false;
+				}
+
+				if (state[v] == Unvisited) {
+					stack.push({ v, 0 });
+				}
+				else if (state[v] == Visiting) {
+					error = "DAG::sort() failed: cycle detected.";
+					return false;
+				}
+			}
+			else {
+				state[u] = Visited;
+				postorder.push_back(u);
+				stack.pop();
+			}
 		}
 	}
 

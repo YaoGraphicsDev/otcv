@@ -31,7 +31,6 @@ enum class ResourceAccessType { // Compatible pass type: *access types marked wi
 	DepthStencilOut,		// Graphics			Image	W
 	DepthStencilInOut,		// Graphics			Image	R/W
 	
-	// TODO: storage images
 	StorageImageIn,			// Compute			Image	R
 	StorageImageOut,		// Compute			Image	W
 	StorageImageInOut,		// Compute			Image	R/W
@@ -154,6 +153,10 @@ struct VirtualResource {
 	std::vector<PassHandle>	reads;
 
 	ResourceHandle logical_id = FG_INVALID_HANDLE;
+
+	// imported
+	bool imported = false;
+	ResourceHandle imported_id = FG_INVALID_HANDLE;
 };
 
 struct LogicalResource {
@@ -168,6 +171,26 @@ struct LogicalResource {
 
 	PassOrder life_begin = FG_ORDER_LAST;
 	PassOrder life_end = FG_ORDER_LAST;
+};
+
+//struct ImportedResourceVersion {
+//	ResourceHandle id; // points to _i_versions
+//	ResourceType type;
+//
+//	PassHandle				write = FG_INVALID_HANDLE;
+//	std::vector<PassHandle>	reads;
+//
+//	// ResourceState state = ResourceState::Null;
+//};
+
+struct ImportedResource {
+	ResourceHandle id; // points to _i_resources
+	ResourceType type;
+
+	Image* img = nullptr;
+	Buffer* buf = nullptr;
+
+	ResourceState state = ResourceState::Null;
 };
 
 struct DAG;
@@ -211,6 +234,16 @@ public:
 	ResourceHandle add_resource(const std::string& name, const ImageBuilder& builder);
 
 	ResourceHandle add_resource(const std::string& name, const BufferBuilder& builder);
+
+	// These types supported
+	/*
+	TextureIn = 0,			// Graphics/Compute	Image	R
+	ColorOut,				// Graphics			Image	W
+	ColorInOut,				// Graphics			Image	R/W
+	*/
+	ResourceHandle import_resource(const std::string& name, Image* img, ResourceState initial_state = ResourceState::Created);
+
+	ResourceHandle version_resource(ResourceHandle id);
 
 	ImageBuilder get_img_builder(ResourceHandle v_id);
 
@@ -274,10 +307,16 @@ private:
 	std::vector<Pass> _passes;
 	std::vector<PassHandle> _sorted_passes;
 	
+	// transient
 	std::vector<VirtualResource> _v_resources;
 	std::vector<LogicalResource> _l_resources;
 	std::vector<CacheEntryHandle> _img_resource_ids;
 	std::vector<CacheEntryHandle> _buf_resource_ids;
+
+	// imported
+	// std::vector<ImportedResourceVersion>	_i_versions;
+	std::vector<ImportedResource>			_i_resources;
+
 
 	// virtual resource id of backbuffer
 	ResourceHandle _backbuffer_id = FG_INVALID_HANDLE;
@@ -340,7 +379,7 @@ struct DAG {
 
 	bool add_dep(NodeHandle node, NodeHandle dep_on);
 
-	void end_at(NodeHandle node);
+	bool add_end(NodeHandle node);
 
 	bool sort(std::string& error, std::vector<NodeHandle>& ordered);
 
@@ -351,7 +390,7 @@ private:
 	};
 
 	std::vector<Node> nodes;
-	NodeHandle end_node = FG_INVALID_HANDLE;
+	std::vector<NodeHandle> end_nodes;
 };
 
 }
