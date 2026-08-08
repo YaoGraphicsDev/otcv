@@ -82,8 +82,14 @@ public:
 
 	// only calls to RenderingBegin::Attachment::load_store() & RenderingBegin::Attachment::clear_value() will be respected.
 	// Other calls will cause undefined behaviour
+	// Graphics pass exclusive
 	typedef std::function<void(RenderingBegin::Attachment&)> LoadStoreFunc;
 	void store_load_func(ResourceHandle res_id, LoadStoreFunc lscb);
+
+	// call a fill command right before state transition
+	// only works on SSBOOut and SSBOInOut
+	// compute pass exclusive
+	void ssbo_clear_value(ResourceHandle res_id, uint32_t value = 0);
 
 	typedef std::function<void(CommandBuffer*, PassContext&)> RenderFunc;
 	void execute_func(RenderFunc exec_cb);
@@ -127,6 +133,7 @@ private:
 	PostPassFunc							_post_pass_cb;
 
 	std::map<ResourceHandle, LoadStoreFunc>	_load_store_cbs;
+	std::map<ResourceHandle, uint32_t>		_ssbo_clear_values;
 	RenderAreaFunc							_render_area_cb = nullptr;
 	RenderFunc								_exec_cb = nullptr;
 

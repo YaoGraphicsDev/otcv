@@ -270,6 +270,10 @@ void Pass::store_load_func(ResourceHandle res_id, LoadStoreFunc lscb) {
 	_load_store_cbs[res_id] = lscb;
 }
 
+void Pass::ssbo_clear_value(ResourceHandle res_id, uint32_t value) {
+	_ssbo_clear_values[res_id] = value;
+}
+
 void Pass::render_area_func(RenderAreaFunc racb) {
 	_render_area_cb = racb;
 }
@@ -916,6 +920,9 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 			case RAT::SSBOOut:
 			case RAT::SSBOInOut:
 				virtual_buffer_usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+				if (_passes[write_pass]._ssbo_clear_values.count(v) > 0) {
+					virtual_buffer_usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+				}
 				break;
 			case RAT::TransferOut:
 				virtual_buffer_usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -952,6 +959,9 @@ std::pair<bool, std::vector<FrameGraph::FrameRecordInput>> FrameGraph::compile(
 				case RAT::SSBOIn:
 				case RAT::SSBOInOut:
 					virtual_buffer_usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+					if (_passes[read_pass]._ssbo_clear_values.count(v) > 0) {
+						virtual_buffer_usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+					}
 					break;
 				case RAT::VertexIn:
 					virtual_buffer_usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -1486,18 +1496,33 @@ bool FrameGraph::record_compute_pass(FrameRecordInput::PassInput& input, PassHan
 			ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(cache_id);
 
+			// clear values, if applicable
+			auto iter = pass._ssbo_clear_values.find(v_id);
+			if (iter != pass._ssbo_clear_values.end()) {
+				transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::TransferDst);
+				cmd->cmd_fill_buffer(buf_ptr->resource, iter->second);
+				buf_ptr->state = ResourceState::TransferDst;
+			}
+
 			// layout transition
 			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::ComputeSSBOWrite);
 			buf_ptr->state = ResourceState::ComputeSSBOWrite;
 		}
 		// inout SSBO
-		for (auto v_id_pair : pass._inout_ssbo) {
-			assert(id_v2p(v_id_pair.first) == id_v2p(v_id_pair.second)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
-			ResourceHandle v_id = v_id_pair.first;
-			ResourceHandle p_id = id_v2p(v_id);
+		for (auto [id0, id1] : pass._inout_ssbo) {
+			assert(id_v2p(id0) == id_v2p(id1)); // inout ssbo virtual id pair must point to the same physical id. Guaranteed by compile()
+			ResourceHandle p_id = id_v2p(id0);
 			assert(_buf_resource_ids[p_id] != FG_INVALID_CACHE_ENTRY_HANDLE); // input/output ssbos must have been allocated. Guaranteed by compile()
 			ssbo_cache_ids.push_back(_buf_resource_ids[p_id]);
 			PhysicalBufferPtr buf_ptr = _buf_allocator->storage(_buf_resource_ids[p_id]);
+
+			// clear values, if applicable
+			auto iter = pass._ssbo_clear_values.find(id0);
+			if (iter != pass._ssbo_clear_values.end()) {
+				transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::TransferDst);
+				cmd->cmd_fill_buffer(buf_ptr->resource, iter->second);
+				buf_ptr->state = ResourceState::TransferDst;
+			}
 
 			// layout transition
 			transition_buffer_state(cmd, buf_ptr->resource, buf_ptr->state, ResourceState::ComputeSSBO);
