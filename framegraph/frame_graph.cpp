@@ -1256,6 +1256,18 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	}
 	pass._render_area_cb(render_begin);
 
+	uint32_t layer_count = 0; // collect layer count along the way
+	auto check_layers = [&](uint32_t count) {
+		assert(count > 0);
+		if (layer_count == 0) {
+			layer_count = count;
+		}
+		else if (layer_count != count) {
+			std::cout << "record_graphics_pass() error: inconsistent layer count" << std::endl;
+			assert(false);
+		}
+	};
+
 	// out color attachments
 	for (ResourceHandle v_id : pass._out_colors) {
 		Image* img = nullptr;
@@ -1285,6 +1297,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 			iter->second(attach_setup);
 		}
 		attach_setup.end();
+		check_layers(img->builder._view_info.subresourceRange.layerCount);
 
 		// layout transition
 		transition_image_state(cmd, img, *state, ResourceState::ColorAttachment);//, sub_range);
@@ -1319,6 +1332,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 			iter->second(attach_setup);
 		}
 		attach_setup.end();
+		check_layers(img->builder._view_info.subresourceRange.layerCount);
 
 		// layout transition
 		transition_image_state(cmd, img, *state, ResourceState::ColorAttachment);//, sub_range);
@@ -1344,6 +1358,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 				iter->second(attach_setup);
 			}
 			attach_setup.end();
+			check_layers(attach_ptr->resource->builder._view_info.subresourceRange.layerCount);
 
 			// layout transition
 			if (attach_ptr->state != ResourceState::DepthStencilAttachmentRead) {
@@ -1373,6 +1388,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 				iter->second(attach_setup);
 			}
 			attach_setup.end();
+			check_layers(attach_ptr->resource->builder._view_info.subresourceRange.layerCount);
 
 			// layout transition
 			transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::DepthStencilAttachment);//, sub_range);
@@ -1400,12 +1416,17 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 			iter->second(attach_setup);
 		}
 		attach_setup.end();
+		check_layers(attach_ptr->resource->builder._view_info.subresourceRange.layerCount);
 
 		// layout transition
 		transition_image_state(cmd, attach_ptr->resource, attach_ptr->state, ResourceState::DepthStencilAttachment);//, sub_range);
 		attach_ptr->state = ResourceState::DepthStencilAttachment;
 		// p_ctx.inout_depth_stencil = attach_ptr->image;
 	}
+
+	// render to all layers, if applicable
+	assert(layer_count > 0);
+	render_begin.layers(layer_count);
 
 	// begin renderpass
 	cmd->cmd_begin_rendering(render_begin);

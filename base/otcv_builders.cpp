@@ -850,6 +850,10 @@ RenderingBegin& RenderingBegin::area(uint32_t width, uint32_t height, int32_t x,
 	_info.renderArea.extent = { width, height };
 	return *this;
 }
+RenderingBegin& RenderingBegin::layers(uint32_t n) {
+	_info.layerCount = n;
+	return *this;
+}
 RenderingBegin::Attachment& RenderingBegin::color_attachment() {
 	_color_attachments.push_back(Attachment(this));
 	return _color_attachments.back();

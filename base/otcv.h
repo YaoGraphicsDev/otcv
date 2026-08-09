@@ -773,6 +773,7 @@ struct RenderingBegin {
 
 	RenderingBegin();
 	RenderingBegin& area(uint32_t width, uint32_t height, int32_t x = 0, int32_t y = 0);
+	RenderingBegin& layers(uint32_t n); // applies to all attachments. Every valid attachment must at least expose this many layers
 	Attachment& color_attachment();
 	Attachment& depth_stencil_attachment();
 

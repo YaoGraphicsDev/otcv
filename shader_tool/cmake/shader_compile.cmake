@@ -117,7 +117,7 @@ function(compile_shaders INPUT_DIR SPIRV_OUTPUT_DIR INCLUDE_DIR CPP_REFLECT_OUTP
 
         _otcv_to_pascal_case("${FILE_NAME}" CPP_NAMESPACE)
 
-        set(GLSLANG_ARGUMENTS -g -V)
+        set(GLSLANG_ARGUMENTS -g -V --target-env vulkan1.3)
         if(INCLUDE_DIR)
             list(APPEND GLSLANG_ARGUMENTS "-I${INCLUDE_DIR}")
         endif()

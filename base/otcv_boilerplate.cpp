@@ -212,6 +212,7 @@ void create_device() {
     v12_feature.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
     v12_feature.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
     v12_feature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12_feature.shaderOutputLayer = VK_TRUE;
     if (enable_ray_query) {
         v12_feature.bufferDeviceAddress = VK_TRUE;
     }

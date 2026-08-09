@@ -10,7 +10,11 @@ if(NOT DEFINED REFLECT_FILE OR REFLECT_FILE STREQUAL "")
     message(FATAL_ERROR "REFLECT_FILE was not provided")
 endif()
 
-set(ARGS -g -V)
+set(ARGS
+    -g
+    -V
+    --target-env vulkan1.3
+)
 
 if(DEFINED INCLUDE_DIR AND NOT INCLUDE_DIR STREQUAL "")
     list(APPEND ARGS "-I${INCLUDE_DIR}")
