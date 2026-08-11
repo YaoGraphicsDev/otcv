@@ -867,7 +867,8 @@ void CommandBuffer::begin(bool one_time) {
 	this->begin_info = begin_info;
 }
 void CommandBuffer::end() {
-	vkEndCommandBuffer(vk_command_buffer);
+	VkResult result = vkEndCommandBuffer(vk_command_buffer);
+	assert(result == VK_SUCCESS);
 	begin_info = {};
 }
 void CommandBuffer::reset(bool release) {
