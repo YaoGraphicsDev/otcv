@@ -128,6 +128,10 @@ ImageBuilder& ImageBuilder::name(const std::string& name) {
 	_name = name;
 	return *this;
 }
+ImageBuilder& ImageBuilder::cube_compatible() {
+	_image_info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	return *this;
+}
 ImageBuilder& ImageBuilder::image_type(VkImageType type) {
 	_image_info.imageType = type;
 	return *this;

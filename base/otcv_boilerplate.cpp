@@ -226,6 +226,7 @@ void create_device() {
     device_feature.samplerAnisotropy = VK_TRUE;
     device_feature.fillModeNonSolid = VK_TRUE;
     device_feature.multiDrawIndirect = VK_TRUE;
+    device_feature.imageCubeArray = VK_TRUE;
 
     VkPhysicalDeviceFeatures2 device_feature_2{};
     device_feature_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;

@@ -403,7 +403,7 @@ void DescriptorSet::bind_consecutive_buffers(uint32_t binding_start, uint32_t bi
 	vkUpdateDescriptorSets(g_device->vk_device, writes.size(), writes.data(), 0, nullptr);
 }
 
-void DescriptorSet::bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images) {
+void DescriptorSet::bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images, SubViewHint subview_hint) {
 	std::vector<VkWriteDescriptorSet> writes(binding_count);
 	std::vector<VkDescriptorImageInfo> infos(binding_count);
 
@@ -425,7 +425,14 @@ void DescriptorSet::bind_consecutive_sampled_images(uint32_t binding_start, uint
 
 		VkDescriptorImageInfo& info = infos[i];
 		info.sampler = VK_NULL_HANDLE;
-		info.imageView = (*(p_images + i))->vk_view;
+		auto subview_iter = subview_hint.find(i);
+		if (subview_iter == subview_hint.end()) {
+			info.imageView = (*(p_images + i))->vk_view;
+		}
+		else {
+			const auto& [range, type] = subview_iter->second;
+			info.imageView = (*(p_images + i))->view_of_subresource(range, type);
+		}
 		info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 		assert(iter->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
@@ -962,6 +969,10 @@ void CommandBuffer::cmd_set_scissor(float width, float height, float x, float y)
 
 void CommandBuffer::cmd_set_depth_compare_op(VkCompareOp op) {
 	vkCmdSetDepthCompareOp(this->vk_command_buffer, op);
+}
+
+void CommandBuffer::cmd_set_front_face(VkFrontFace front) {
+	vkCmdSetFrontFace(this->vk_command_buffer, front);
 }
 
 void CommandBuffer::cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data) {
@@ -1508,6 +1519,7 @@ Image::Image(ImageBuilder& builder) {
 		VK_IMAGE_TILING_OPTIMAL, builder._image_info.usage, 0, &props);
 	if (result != VK_SUCCESS) {
 		std::cout << "Physical device is not capable of creating such image" << std::endl;
+		assert(false);
 		exit(1);
 	}
 	//VkExtent3D            maxExtent;
@@ -1744,28 +1756,37 @@ void Image::initialize_state(ResourceState target_state, ResourceState current_s
 	wait_for_async();
 }
 
-VkImageView Image::view_of_subresource(const VkImageSubresourceRange& range) {
+VkImageView Image::view_of_subresource(const VkImageSubresourceRange& range, VkImageViewType view_type) {
 	assert(builder._image_info.mipLevels > range.baseMipLevel);
 	assert(builder._image_info.mipLevels >= range.baseMipLevel + range.levelCount);
 	assert(builder._image_info.arrayLayers > range.baseArrayLayer);
 	assert(builder._image_info.arrayLayers >= range.baseArrayLayer + range.layerCount);
-	uint32_t view_id = pack(uint8_t(range.baseMipLevel), uint8_t(range.levelCount), uint8_t(range.baseArrayLayer), uint8_t(range.layerCount));
+	// cant have any of these 4 values exceed 255, otherwise packing fails. In fact they most likely wont exceed
+	assert(uint8_t(range.baseMipLevel) <= std::numeric_limits<uint8_t>::max());
+	assert(uint8_t(range.levelCount) <= std::numeric_limits<uint8_t>::max());
+	assert(uint8_t(range.baseArrayLayer) <= std::numeric_limits<uint8_t>::max());
+	assert(uint8_t(range.layerCount) <= std::numeric_limits<uint8_t>::max());
+	uint64_t view_id = pack(uint8_t(view_type), uint8_t(range.baseMipLevel), uint8_t(range.levelCount), uint8_t(range.baseArrayLayer), uint8_t(range.layerCount));
+	// uint32_t view_id_64 = pack(uint32_t(view_type), range_id_32);
 	auto iter = vk_subresource_views.find(view_id);
 	if (iter != vk_subresource_views.end()) {
 		return iter->second;
 	}
 
 	VkImageViewCreateInfo layer_view_info = builder._view_info;
+	if (view_type != VK_IMAGE_VIEW_TYPE_MAX_ENUM) {
+		layer_view_info.viewType = view_type;
+	}
 	layer_view_info.subresourceRange = range;
-	VkImageView vk_layers_view;
-	VkResult result = vkCreateImageView(g_device->vk_device, &layer_view_info, nullptr, &vk_layers_view);
+	VkImageView vk_sub_view;
+	VkResult result = vkCreateImageView(g_device->vk_device, &layer_view_info, nullptr, &vk_sub_view);
 	if (result != VK_SUCCESS) {
-		std::cout << "cannot create layer view for [mip, count] = [" << range.baseMipLevel  << ", " << range.levelCount << " ]"
+		std::cout << "cannot create layer view for view_type = " << layer_view_info.viewType << ", [mip, count] = [" << range.baseMipLevel  << ", " << range.levelCount << "]"
 			<< ", [layer, count] = [ " << range.baseArrayLayer << ", " << range.layerCount << " ], error code = " << result << std::endl;
 		exit(1);
 	}
-	vk_subresource_views[view_id] = vk_layers_view;
-	return vk_layers_view;
+	vk_subresource_views[view_id] = vk_sub_view;
+	return vk_sub_view;
 }
 
 

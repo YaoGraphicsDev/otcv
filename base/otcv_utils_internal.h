@@ -7,6 +7,8 @@ uint32_t pack(uint16_t a, uint16_t b);
 
 uint32_t pack(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 
+uint64_t pack(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t e);
+
 void unpack(uint32_t ab, uint16_t& a, uint16_t& b);
 
 std::vector<char> read_file_binary(const std::string& path);

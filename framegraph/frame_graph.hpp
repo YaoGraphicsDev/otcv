@@ -66,6 +66,9 @@ public:
 		ResourceHandle id0,
 		ResourceHandle id1 = FG_INVALID_HANDLE);
 
+	// set an alternative image view for a resource
+	// memory barrier is applied to the full image, not view specific.
+	void texture_view_as(ResourceHandle res_id, VkImageSubresourceRange range, VkImageViewType view_type);
 
 	// called immediately after cmd->begin()
 	typedef std::function<void(CommandBuffer*)> PrePassFunc;
@@ -128,6 +131,8 @@ private:
 	std::vector<std::pair<ResourceHandle, ResourceHandle>>	_target_transfer;
 
 	std::map<ResourceHandle, ResourceAccessType>			_access_map;
+
+	std::map<ResourceHandle, std::pair<VkImageSubresourceRange, VkImageViewType>>	_subview_map;
 
 	PrePassFunc								_pre_pass_cb;
 	PostPassFunc							_post_pass_cb;

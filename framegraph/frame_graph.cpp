@@ -258,6 +258,21 @@ bool Pass::access(
 	return true;
 }
 
+void Pass::texture_view_as(ResourceHandle res_id, VkImageSubresourceRange range, VkImageViewType view_type) {
+	if (std::count(_in_textures.begin(), _in_textures.end(), res_id) == 0) {
+		std::cout << "Pass::texture_view_as() error : cannot process subview for any access types other than TextureIn" << std::endl;
+		assert(false);
+		return;
+	}
+	if (_type != PassType::Graphics) {
+		std::cout << "Pass::texture_view_as() error : cannot process subview for non graphics pass" << std::endl;
+		assert(false);
+		return;
+	}
+
+	_subview_map[res_id] = { range, view_type };
+}
+
 void Pass::pre_pass_func(PrePassFunc precb) {
 	_pre_pass_cb = precb;
 }
@@ -1120,6 +1135,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	// textures. Send into execution lambda through PassContext
 	std::vector<CacheEntryHandle>	tex_keys;
 	std::vector<Image*>				tex_imgs;
+	DescriptorSet::SubViewHint		subview_hint;
 	for (ResourceHandle v_id : pass._in_textures) {
 		Image* img = nullptr;
 		ResourceState* state = nullptr;
@@ -1139,6 +1155,9 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 			tex_keys.push_back(_img_resource_ids[p_id]);
 		}
 		tex_imgs.push_back(img);
+		if (pass._subview_map.count(v_id)) {
+			subview_hint[tex_imgs.size() - 1] = pass._subview_map.at(v_id);
+		}
 
 		// layout transition
 		if (*state != ResourceState::FragSample) {
@@ -1151,7 +1170,7 @@ bool FrameGraph::record_graphics_pass(FrameRecordInput::PassInput& input, PassHa
 	assert(tex_keys.size() == input.textures.size()); // guaranteed by compile()
 	if (tex_keys != input.textures) {
 		// different set of images for textures. Update descriptor set
-		input.desc_set->bind_consecutive_sampled_images(TextureBaseBinding, tex_imgs.size(), tex_imgs.data());
+		input.desc_set->bind_consecutive_sampled_images(TextureBaseBinding, tex_imgs.size(), tex_imgs.data(), subview_hint);
 		std::copy(tex_keys.begin(), tex_keys.end(), input.textures.begin());
 	}
 

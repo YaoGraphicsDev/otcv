@@ -171,6 +171,8 @@ struct CommandBuffer {
 	void cmd_set_scissor(float width, float height,
 		float x = 0.0f, float y = 0.0f);
 	void cmd_set_depth_compare_op(VkCompareOp op);
+	void cmd_set_front_face(VkFrontFace front);
+
 
 	void cmd_push_constant(PipelineLayout* layout, const std::string& name, const void* data);
 	void cmd_push_constant(GraphicsPipeline* pipeline, const std::string& name, const void* data);
@@ -370,7 +372,8 @@ struct DescriptorSet {
 	void bind_buffer_array(uint32_t binding, Buffer* buffer, VkDeviceSize offset, VkDeviceSize stride, uint32_t count);
 
 	void bind_consecutive_buffers(uint32_t binding_start, uint32_t binding_count, Buffer** p_buffers);
-	void bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
+	typedef std::map<uint32_t, std::pair<VkImageSubresourceRange, VkImageViewType>> SubViewHint; // binding - [subresource range, view type]
+	void bind_consecutive_sampled_images(uint32_t binding_start, uint32_t binding_count, Image** p_images, SubViewHint subview_hint = {});
 	void bind_consecutive_storage_images(uint32_t binding_start, uint32_t binding_count, Image** p_images);
 
 	void bind_acceleration_structure(uint32_t binding, AccelerationStructure* as);
@@ -415,6 +418,7 @@ struct Image;
 struct ImageBuilder {
 	ImageBuilder();
 	ImageBuilder& name(const std::string& name);
+	ImageBuilder& cube_compatible();
 	ImageBuilder& image_type(VkImageType type);
 	ImageBuilder& format(VkFormat format);
 	ImageBuilder& size(uint32_t width, uint32_t height, uint32_t depth);
@@ -465,7 +469,7 @@ struct Image {
 
 	void initialize_state(ResourceState target_state, ResourceState current_state = ResourceState::Created);
 
-	VkImageView view_of_subresource(const VkImageSubresourceRange& range);
+	VkImageView view_of_subresource(const VkImageSubresourceRange& range, VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM);
 
 	ImageBuilder builder;
 	VkImage vk_image = VK_NULL_HANDLE;
@@ -474,7 +478,7 @@ struct Image {
 	VkImageView vk_view = VK_NULL_HANDLE;
 	// view of layers
 	// packed index start -- count
-	std::map<uint32_t, VkImageView> vk_subresource_views;
+	std::map<uint64_t, VkImageView> vk_subresource_views;
 
 	struct AsyncPopulateCtx {
 		otcv::Fence* fence;

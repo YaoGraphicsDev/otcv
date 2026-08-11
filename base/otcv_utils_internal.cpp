@@ -23,6 +23,14 @@ uint32_t pack(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 		uint32_t(d);
 }
 
+uint64_t pack(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t e) {
+	return (uint64_t(a) << 32) |
+		(uint64_t(b) << 24) |
+		(uint64_t(c) << 16) |
+		(uint64_t(d) << 8) |
+		uint64_t(e);
+}
+
 void unpack(uint32_t ab, uint16_t& a, uint16_t& b) {
 	a = ab >> 16;
 	b = ab & 0xffff;
