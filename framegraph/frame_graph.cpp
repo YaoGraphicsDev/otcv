@@ -308,6 +308,16 @@ FrameGraph::FrameGraph(
 }
 
 FrameGraph::~FrameGraph() {
+	for (ImportedResource& r : _i_resources) {
+		if (r.ownership == ImportedResource::Ownership::FrameGraph) {
+			if (r.buf) {
+				r.buf->destroy();
+			}
+			if (r.img) {
+				r.img->destroy();
+			}
+		}
+	}
 }
 
 Pass& FrameGraph::add_pass(const std::string& name, PassType type) {
@@ -355,7 +365,7 @@ ResourceHandle FrameGraph::add_resource(const std::string& name, const BufferBui
 	return id;
 }
 
-ResourceHandle FrameGraph::import_resource(const std::string& name, Image* img, ResourceState initial_state) {
+ResourceHandle FrameGraph::import_resource(const std::string& name, Image* img, ImportedResource::Ownership ownership, ResourceState initial_state) {
 	if (_state != State::Building) {
 		std::cout << "FrameGraph::add_resource() error: reset graph before building" << std::endl;
 		assert(false);
@@ -367,6 +377,7 @@ ResourceHandle FrameGraph::import_resource(const std::string& name, Image* img, 
 	i_res.id = i_id;
 	i_res.type = ResourceType::Image;
 	i_res.img = img;
+	i_res.ownership = ownership;
 	i_res.state = initial_state;
 
 	ResourceHandle v_id = _v_resources.size();

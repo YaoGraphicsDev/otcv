@@ -202,6 +202,11 @@ struct ImportedResource {
 	Image* img = nullptr;
 	Buffer* buf = nullptr;
 
+	enum class Ownership {
+		External,
+		FrameGraph
+	};
+	Ownership ownership = Ownership::FrameGraph;
 	ResourceState state = ResourceState::Null;
 };
 
@@ -253,7 +258,9 @@ public:
 	ColorOut,				// Graphics			Image	W
 	ColorInOut,				// Graphics			Image	R/W
 	*/
-	ResourceHandle import_resource(const std::string& name, Image* img, ResourceState initial_state = ResourceState::Created);
+	ResourceHandle import_resource(const std::string& name, Image* img,
+		ImportedResource::Ownership ownership = ImportedResource::Ownership::FrameGraph,
+		ResourceState initial_state = ResourceState::Created);
 
 	ResourceHandle version_resource(ResourceHandle id);
 
