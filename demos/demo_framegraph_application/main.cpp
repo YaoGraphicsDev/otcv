@@ -80,7 +80,7 @@ void configure_framegraph(fg::Application* app, std::shared_ptr<UtilObjects> uo,
         begin.area(window_width, window_height);
     });
     ui_overlay_pass.execute_func([app, uo](CommandBuffer* cmd, fg::PassContext& ctx) {
-        uint32_t fn = app->current_frame();
+        uint32_t fn = app->frame_slot();
         ImGui_ImplOTCV_Exec(cmd, uo->imgui_meshes[fn].vb, uo->imgui_meshes[fn].ib);
     });
 
@@ -295,7 +295,7 @@ int main() {
 			app->register_framegraph_rebuild(std::bind(configure_framegraph, std::placeholders::_1, util_objs, fg_config));
 		}
 
-        uint32_t frame_index = app->current_frame();
+        uint32_t frame_index = app->frame_slot();
 		ImGui_ImplOTCV_BuildBuffers(util_objs->imgui_meshes[frame_index].vb, util_objs->imgui_meshes[frame_index].ib);
 	};
 
