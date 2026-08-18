@@ -131,11 +131,10 @@ struct StaticUBOArray {
 
 /*
 * Supports writing through a staging buffer and copy commands.Requires a command buffer as input parameter.
-* Best of both (StaticUBOArray & SSBO) world:, 
 *	1. Can be updated through mapped memory on host
 *	2. Offer device local fast memory access
 *	3. No UBO limitation, does not assume dynamically uniform access
-* Only downside being the copy command
+* Only downside being the need for a push command every frame
 */
 template <typename T>
 struct SSBO {

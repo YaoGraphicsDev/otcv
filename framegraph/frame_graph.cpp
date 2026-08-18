@@ -411,10 +411,14 @@ ResourceHandle FrameGraph::version_resource(ResourceHandle id) {
 	}
 	else {
 		if (_v_resources.at(id).type == ResourceType::Image) {
-			return add_resource(_v_resources.at(id).name + "_v_", _v_resources.at(id).img_builder);
+			std::string name = _v_resources.at(id).name;
+			ImageBuilder builder = _v_resources.at(id).img_builder;
+			return add_resource(name + "_v_", builder);
 		}
 		else if (_v_resources.at(id).type == ResourceType::Buffer) {
-			return add_resource(_v_resources.at(id).name + "_v_", _v_resources.at(id).buf_builder);
+			std::string name = _v_resources.at(id).name;
+			BufferBuilder builder = _v_resources.at(id).buf_builder;
+			return add_resource(name + "_v_", builder);
 		}
 		else {
 			assert(false);
