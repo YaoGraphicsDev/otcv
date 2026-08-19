@@ -62,7 +62,7 @@ A custom Dear ImGui renderer that uploads draw data and records rendering comman
 
 ### Shader Tool
 
-CMake discovers GLSL shaders, tracks their dependencies, and compiles them to Vulkan 1.3 SPIR-V. It also generates matching C++ types from shader layouts.
+CMake discovers GLSL shaders, tracks their dependencies and compiles them to Vulkan 1.3 SPIR-V. It also generates matching C++ types from shader layouts.
 
 At runtime, OTCV loads SPIR-V and reflects shader stages, resources, descriptor bindings and push constants for pipeline creation.
 
