@@ -348,7 +348,8 @@ uint32_t find_memory_type(uint32_t usable_types_mask, VkMemoryPropertyFlags requ
 	vkGetPhysicalDeviceMemoryProperties(g_physical_device.vk_physical_device, &supported_props);
 
 	for (uint32_t i = 0; i < supported_props.memoryTypeCount; ++i) {
-		if (usable_types_mask & (1 << i) && supported_props.memoryTypes[i].propertyFlags & required_props) {
+		if ((usable_types_mask & (1u << i)) &&
+			(supported_props.memoryTypes[i].propertyFlags & required_props) == required_props) {
 			return i;
 		}
 	}

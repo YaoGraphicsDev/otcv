@@ -1281,15 +1281,22 @@ AccelerationStructure::AccelerationStructure(AccelerationStructureBuilder& build
 }
 
 void AccelerationStructure::create_build_as_blas() {
-	// 1. create
-	// fill out VkAccelerationStructureBuildGeometryInfoKHR's non-trivial fields
-	std::vector<VkAccelerationStructureGeometryKHR*> geo_ptrs(builder._tri_geos.size());
-	for (uint32_t i = 0; i < builder._tri_geos.size(); ++i) {
-		geo_ptrs[i] = &builder._tri_geos[i]._vk_geo;
+	if (builder._tri_geos.empty()) {
+		std::cout << "cannot build a BLAS with no geometries" << std::endl;
+		assert(false);
+		exit(1);
 	}
-	builder._vk_build_geo_info.geometryCount = builder._tri_geos.size();
-	builder._vk_build_geo_info.pGeometries = nullptr;
-	builder._vk_build_geo_info.ppGeometries = geo_ptrs.data();
+
+	// 1. create
+	// Use the contiguous pGeometries form. This is simpler for capture layers to
+	// intercept than ppGeometries and keeps every structure alive through vkEndCommandBuffer.
+	std::vector<VkAccelerationStructureGeometryKHR> geometries(builder._tri_geos.size());
+	for (uint32_t i = 0; i < builder._tri_geos.size(); ++i) {
+		geometries[i] = builder._tri_geos[i]._vk_geo;
+	}
+	builder._vk_build_geo_info.geometryCount = static_cast<uint32_t>(geometries.size());
+	builder._vk_build_geo_info.pGeometries = geometries.data();
+	builder._vk_build_geo_info.ppGeometries = nullptr;
 
 	std::vector<uint32_t> prim_counts;
 	for (auto& tri_geo : builder._tri_geos) {
@@ -1343,14 +1350,26 @@ void AccelerationStructure::create_build_as_blas() {
 		std::max(build_size_info.buildScratchSize, build_size_info.updateScratchSize) :
 		build_size_info.buildScratchSize;
 
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props{};
+	as_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+	VkPhysicalDeviceProperties2 props{};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	props.pNext = &as_props;
+	vkGetPhysicalDeviceProperties2(g_physical_device.vk_physical_device, &props);
+	const VkDeviceSize scratch_alignment = as_props.minAccelerationStructureScratchOffsetAlignment;
+
 	scratch_buf = new Buffer(BufferBuilder()
-		.size(scratch_size)
+		.size(scratch_size + scratch_alignment - 1)
 		.usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
 		.host_access(BufferBuilder::Access::Invisible));
-	builder._vk_build_geo_info.scratchData.deviceAddress = scratch_buf->device_address();
+	const VkDeviceAddress scratch_address = scratch_buf->device_address();
+	builder._vk_build_geo_info.scratchData.deviceAddress =
+		(scratch_address + scratch_alignment - 1) & ~(scratch_alignment - 1);
 
 	std::vector<Buffer*> temp_bufs;
-	for (AccelerationStructureBuilder::TrianglesGeometry& tri_geo : builder._tri_geos) {
+	for (uint32_t geometry_index = 0; geometry_index < builder._tri_geos.size(); ++geometry_index) {
+		AccelerationStructureBuilder::TrianglesGeometry& tri_geo = builder._tri_geos[geometry_index];
+		VkAccelerationStructureGeometryKHR& vk_geometry = geometries[geometry_index];
 		uint32_t vertex_count = tri_geo._vk_geo.geometry.triangles.maxVertex + 1;
 		VkDeviceSize vertex_stride = tri_geo._vk_geo.geometry.triangles.vertexStride;
 		Buffer* vb = BufferBuilder()
@@ -1360,7 +1379,7 @@ void AccelerationStructure::create_build_as_blas() {
 			.build();
 		assert(tri_geo._vertex_data);
 		vb->populate(tri_geo._vertex_data);
-		tri_geo._vk_geo.geometry.triangles.vertexData.deviceAddress = vb->device_address();
+		vk_geometry.geometry.triangles.vertexData.deviceAddress = vb->device_address();
 		temp_bufs.push_back(vb);
 
 		uint32_t index_count = tri_geo.n_tris * 3;
@@ -1383,7 +1402,7 @@ void AccelerationStructure::create_build_as_blas() {
 			.build();
 		assert(tri_geo._index_data);
 		ib->populate(tri_geo._index_data);
-		tri_geo._vk_geo.geometry.triangles.indexData.deviceAddress = ib->device_address();
+		vk_geometry.geometry.triangles.indexData.deviceAddress = ib->device_address();
 		temp_bufs.push_back(ib);
 	}
 	
@@ -1453,11 +1472,21 @@ void AccelerationStructure::create_build_as_tlas() {
 		std::max(build_size_info.buildScratchSize, build_size_info.updateScratchSize) :
 		build_size_info.buildScratchSize;
 
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props{};
+	as_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+	VkPhysicalDeviceProperties2 props{};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	props.pNext = &as_props;
+	vkGetPhysicalDeviceProperties2(g_physical_device.vk_physical_device, &props);
+	const VkDeviceSize scratch_alignment = as_props.minAccelerationStructureScratchOffsetAlignment;
+
 	scratch_buf = new Buffer(BufferBuilder()
-		.size(scratch_size)
+		.size(scratch_size + scratch_alignment - 1)
 		.usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
 		.host_access(BufferBuilder::Access::Invisible));
-	builder._vk_build_geo_info.scratchData.deviceAddress = scratch_buf->device_address();
+	const VkDeviceAddress scratch_address = scratch_buf->device_address();
+	builder._vk_build_geo_info.scratchData.deviceAddress =
+		(scratch_address + scratch_alignment - 1) & ~(scratch_alignment - 1);
 
 	std::vector<VkAccelerationStructureInstanceKHR> vk_instances(builder._instance_geo._instances.size());
 	for (uint32_t i = 0; i < builder._instance_geo._instances.size(); ++i) {
@@ -1485,9 +1514,13 @@ void AccelerationStructure::create_build_as_tlas() {
 }
 
 AccelerationStructure::~AccelerationStructure() {
+	if (vk_as != VK_NULL_HANDLE) {
+		g_device->fn<PFN_vkDestroyAccelerationStructureKHR>("vkDestroyAccelerationStructureKHR")(
+			g_device->vk_device, vk_as, nullptr);
+		vk_as = VK_NULL_HANDLE;
+	}
 	delete backing_buf;
 	delete scratch_buf;
-	g_device->fn<PFN_vkDestroyAccelerationStructureKHR>("vkDestroyAccelerationStructureKHR")(g_device->vk_device, vk_as, nullptr);
 }
 
 void AccelerationStructure::destroy() {
